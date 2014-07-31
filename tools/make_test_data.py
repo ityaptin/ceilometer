@@ -40,7 +40,7 @@ from ceilometer import sample
 from ceilometer import storage
 from ceilometer.openstack.common import timeutils
 
-def make_test_data(conn, name, meter_type, unit, volume, random_min,
+def make_samples(name, meter_type, unit, volume, random_min,
                    random_max, user_id, project_id, resource_id, start,
                    end, interval, resource_metadata={}, source='artificial',):
 
@@ -81,10 +81,7 @@ def make_test_data(conn, name, meter_type, unit, volume, random_min,
                           resource_metadata=resource_metadata,
                           source=source,
                           )
-        data = utils.meter_message_from_counter(
-            c,
-            cfg.CONF.publisher.metering_secret)
-        conn.record_metering_data(data)
+
         n += 1
         timestamp = timestamp + increment
 
@@ -93,13 +90,12 @@ def make_test_data(conn, name, meter_type, unit, volume, random_min,
             # in time by random element. So we always set it back to
             # volume.
             total_volume = volume
+        yield c
 
     print('Added %d new events for meter %s.' % (n, name))
 
 
-def main():
-    cfg.CONF([], project='ceilometer')
-
+def get_parser():
     parser = argparse.ArgumentParser(
         description='generate metering data',
     )
@@ -164,6 +160,13 @@ def main():
         type=int,
         default=1,
     )
+    return parser
+
+
+def main():
+    cfg.CONF([], project='ceilometer')
+
+    parser = get_parser()
     args = parser.parse_args()
 
     # Set up logging to use the console
@@ -190,21 +193,24 @@ def main():
     start = datetime.datetime.utcnow() - datetime.timedelta(days=args.start)
     end = datetime.datetime.utcnow() + datetime.timedelta(days=args.end)
 
-    make_test_data(conn = conn,
-                   name=args.counter,
-                   meter_type=args.type,
-                   unit=args.unit,
-                   volume=args.volume,
-                   random_min=args.random_min,
-                   random_max=args.random_max,
-                   user_id=args.user,
-                   project_id=args.project,
-                   resource_id=args.resource,
-                   start=start,
-                   end=end,
-                   interval=args.interval,
-                   resource_metadata={},
-                   source='artificial',)
+    for sample in make_samples(
+                       name=args.counter,
+                       meter_type=args.type,
+                       unit=args.unit,
+                       volume=args.volume,
+                       random_min=args.random_min,
+                       random_max=args.random_max,
+                       user_id=args.user,
+                       project_id=args.project,
+                       resource_id=args.resource,
+                       start=start,
+                       end=end,
+                       interval=args.interval,
+                       resource_metadata={},
+                       source='artificial',):
+        data = utils.meter_message_from_counter(sample, cfg.CONF.publisher.metering_secret)
+        conn.record_metering_data(data)
+
 
     return 0
 
