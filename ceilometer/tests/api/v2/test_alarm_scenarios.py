@@ -25,6 +25,7 @@ import uuid
 
 import mock
 import oslo.messaging.conffixture
+import six
 from six import moves
 
 from ceilometer.alarm.storage import models
@@ -234,7 +235,7 @@ class TestAlarms(v2.FunctionalTest,
     def test_get_not_existing_alarm(self):
         resp = self.get_json('/alarms/alarm-id-3', expect_errors=True)
         self.assertEqual(404, resp.status_code)
-        self.assertEqual("Alarm alarm-id-3 Not Found",
+        self.assertEqual('Alarm alarm-id-3 not found',
                          jsonutils.loads(resp.body)['error_message']
                          ['faultstring'])
 
@@ -386,7 +387,7 @@ class TestAlarms(v2.FunctionalTest,
                 'combination_rule': {}
             }
         }
-        for field, json in jsons.iteritems():
+        for field, json in six.iteritems(jsons):
             resp = self.post_json('/alarms', params=json, expect_errors=True,
                                   status=400, headers=self.auth_headers)
             self.assertEqual("Invalid input for field/attribute %s."
@@ -965,7 +966,7 @@ class TestAlarms(v2.FunctionalTest,
                 'period': 180,
             }
         }
-        for aspect, id in identifiers.iteritems():
+        for aspect, id in six.iteritems(identifiers):
             json['%s_id' % aspect] = id
         return json
 
@@ -1088,7 +1089,9 @@ class TestAlarms(v2.FunctionalTest,
                               'X-Project-Id': str(uuid.uuid4())}
         resp = self.post_json('/alarms', params=json, status=404,
                               headers=an_other_user_auth)
-        self.assertEqual("Alarm a Not Found",
+        self.assertEqual("Alarm a not found in project "
+                         "%s" %
+                         an_other_user_auth['X-Project-Id'],
                          jsonutils.loads(resp.body)['error_message']
                          ['faultstring'])
 
@@ -1121,7 +1124,8 @@ class TestAlarms(v2.FunctionalTest,
         headers['X-Roles'] = 'admin'
         resp = self.post_json('/alarms', params=json, status=404,
                               headers=headers)
-        self.assertEqual("Alarm a Not Found",
+        self.assertEqual("Alarm a not found in project "
+                         "aprojectidthatisnotmine",
                          jsonutils.loads(resp.body)['error_message']
                          ['faultstring'])
 
@@ -1640,13 +1644,13 @@ class TestAlarms(v2.FunctionalTest,
                     status=204)
 
     def _assert_is_subset(self, expected, actual):
-        for k, v in expected.iteritems():
+        for k, v in six.iteritems(expected):
             self.assertEqual(v, actual.get(k), 'mismatched field: %s' % k)
         self.assertIsNotNone(actual['event_id'])
 
     def _assert_in_json(self, expected, actual):
         actual = jsonutils.dumps(jsonutils.loads(actual), sort_keys=True)
-        for k, v in expected.iteritems():
+        for k, v in six.iteritems(expected):
             fragment = jsonutils.dumps({k: v}, sort_keys=True)[1:-1]
             self.assertTrue(fragment in actual,
                             '%s not in %s' % (fragment, actual))
