@@ -20,7 +20,7 @@
 
 A Sample doesn't really do anything, but we need a way to
 ensure that all of the appropriate fields have been filled
-in by the plugins that create them.
+in by the plugins that create them.result_dir = args.result_dir
 """
 
 import copy

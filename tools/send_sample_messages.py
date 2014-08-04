@@ -4,6 +4,7 @@ from __future__ import print_function
 import argparse
 import json
 import datetime
+import sys
 
 import make_test_data
 
@@ -23,9 +24,16 @@ def send_batch(rabbit_topic, batch, rpc_client):
                                                 'record_metering_data', data=batch)
 
 
-def main():
-    cfg.CONF([], project='ceilometer')
-    parser = make_test_data.get_parser()
+def get_rpc_client(config_file):
+    print(config_file)
+    service.prepare_service(argv=['/', '--config-file', config_file])
+    transport = messaging.get_transport()
+    rpc_client = messaging.get_rpc_client(transport, version='1.0')
+    return rpc_client
+
+def get_parser(parser=None):
+    if not parser:
+        parser = make_test_data.get_parser()
     parser.add_argument(
         '--sample-batch-size',
         default=1,
@@ -41,22 +49,19 @@ def main():
         default='metering',
         help='Rabbit topic for samples',
     )
+    return parser
 
-    args = parser.parse_args()
+
+def send_test_data(args):
     batch_size = args.sample_batch_size
 
     start = datetime.datetime.utcnow() - datetime.timedelta(days=int(args.start))
     end = datetime.datetime.utcnow() + datetime.timedelta(days=int(args.end))
-    print(str(args))
 
-    service.prepare_service(argv=['/', '--config-file', args.config_file])
-    transport = messaging.get_transport()
-    rpc_client = messaging.get_rpc_client(transport, version='1.0')
-
+    rpc_client = get_rpc_client(args.config_file)
     batch = []
     start_time = time.time()
     batch_count = 0
-    rate = 0
     for sample in make_test_data.make_samples(name=args.counter,
                                               meter_type=args.type,
                                               unit=args.unit,
@@ -78,8 +83,19 @@ def main():
             send_batch(args.rabbit_topic, batch, rpc_client)
             batch = []
         batch_count += 1
-	rate = batch_count / (time.time() - start_time)
+        rate = batch_count / (time.time() - start_time)
         print("Rate is %.2f" % rate)
+
+
+def main(argv=None):
+    argv = argv or sys.argv
+    cfg.CONF([], project='ceilometer')
+    parser = make_test_data.get_parser()
+    try:
+        args = parser.parse_args(argv)
+    except Exception:
+        args = parser.parse_args(argv[1:])
+    send_test_data(args)
 
 if __name__ == '__main__':
     main()

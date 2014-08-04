@@ -163,9 +163,10 @@ def get_parser():
     return parser
 
 
-def main():
+def main(argv=None):
     cfg.CONF([], project='ceilometer')
-
+    if not argv:
+        argv = sys.argv[1:]
     parser = get_parser()
     args = parser.parse_args()
 

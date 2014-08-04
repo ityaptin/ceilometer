@@ -13,12 +13,15 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+from oslo.config import cfg
 
 from ceilometer.api import app
 from ceilometer import service
-
+from ceilometer import service_profiler
 
 def main():
     service.prepare_service()
+    if cfg.CONF.use_profiler:
+        service_profiler.profile("api")
     srv = app.build_server()
     srv.serve_forever()

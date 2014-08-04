@@ -13,14 +13,18 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+from oslo.config import cfg
 
 from ceilometer import collector
 from ceilometer.openstack.common import service as os_service
 from ceilometer import service
+from ceilometer import service_profiler
 
 
 def main():
     service.prepare_service()
+    if cfg.CONF.use_profiler:
+        service_profiler.profile("collector")
     launcher = os_service.ProcessLauncher()
     launcher.launch_service(
         collector.CollectorService(),
