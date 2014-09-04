@@ -10,7 +10,8 @@ import subprocess
 import timeit
 import shutil
 import copy
-import send_sample_messages
+import messaging_sample_generator
+
 
 def check_log_file_updates(proc, log_file):
     log_file_size = 0
@@ -30,16 +31,17 @@ class CollectorPerformanceTest():
         self.profile_dir = profile_dir
 
     def start_collector(self):
-        return subprocess.Popen([self.argv.bin_dir + '/ceilometer-collector',
+        return subprocess.Popen(['ceilometer-collector',
                                  '--config-file', self.config_file,
                                  '--log-file', self.log_file])
 
     def start(self):
-        day_diff = int(self.argv.stop) - int(self.argv.start)
+        day_diff = int(self.argv.end) - int(self.argv.start)
         for i in range(0, self.argv.generate_multiplier):
             argv = copy.copy(self.argv)
-            multiprocessing.Process(target=send_sample_messages.send_test_data,
-                                    args=[argv]).start()
+            output_file = self.profile_dir + "/messaging_generator_%s_rate" % i
+            multiprocessing.Process(target=messaging_sample_generator.send_test_data,
+                                    args=[argv, output_file]).start()
             self.argv.start = int(self.argv.start) - day_diff
             self.argv.end = int(self.argv.end) - day_diff
         collector_proc = self.start_collector()
@@ -70,7 +72,7 @@ class ApiPerformanceTest(object):
                 f.write("%s : %s\n" % (query, t))
 
     def start(self):
-        proc = subprocess.Popen([self.argv.bin_dir + '/ceilometer-api',
+        proc = subprocess.Popen(['ceilometer-api',
                                  "--config-file", self.config_file,
                                  "--log-file", self.log_file], )
         time.sleep(30)
@@ -89,7 +91,7 @@ def mkdir(path):
 
 
 def get_parser():
-    parser = send_sample_messages.get_parser()
+    parser = messaging_sample_generator.get_parser()
     parser.add_argument(
         '--result-dir',
         default='/tmp/collector-tests',
@@ -101,6 +103,7 @@ def get_parser():
     )
     parser.add_argument(
         '--log-file',
+        default='/tmp/ceilometer.log',
         help='Log file for collector',
     )
     parser.add_argument(
@@ -138,7 +141,7 @@ def get_connections(db_connections_file):
 
 def create_config_file(args, conn, test_result_dir):
     config_file = test_result_dir + "/ceilometer.conf"
-    shutil.copy(args.config_file, config_file)
+    shutil.copy(args.config_template, config_file)
     with open(config_file, 'a') as f:
         f.write(("[DEFAULT]\n"
                  "use_profiler=True\n"
@@ -169,7 +172,8 @@ def main(argv):
         CollectorPerformanceTest(args,
                                  config_file,
                                  backend_result_dir).start()
-        ApiPerformanceTest(args, config_file, backend_result_dir).start()
+        # ApiPerformanceTest(args, config_file, backend_result_dir).start()
 
 if __name__ == '__main__':
     main(sys.argv[1:])
+
