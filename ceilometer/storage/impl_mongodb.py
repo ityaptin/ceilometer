@@ -386,7 +386,6 @@ class Connection(pymongo_base.Connection):
                                     hour=23, minute=59, second=59)
 
     def __init__(self, url):
-
         # NOTE(jd) Use our own connection pooling on top of the Pymongo one.
         # We need that otherwise we overflow the MongoDB instance with new
         # connection since we instanciate a Pymongo client each time someone

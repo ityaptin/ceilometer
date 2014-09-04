@@ -9,7 +9,7 @@ import errno
 import subprocess
 import timeit
 import shutil
-
+import copy
 import send_sample_messages
 
 def check_log_file_updates(proc, log_file):
@@ -35,8 +35,13 @@ class CollectorPerformanceTest():
                                  '--log-file', self.log_file])
 
     def start(self):
-        multiprocessing.Process(target=send_sample_messages.send_test_data,
-                                args=[self.argv]).start()
+        day_diff = int(self.argv.stop) - int(self.argv.start)
+        for i in range(0, self.argv.generate_multiplier):
+            argv = copy.copy(self.argv)
+            multiprocessing.Process(target=send_sample_messages.send_test_data,
+                                    args=[argv]).start()
+            self.argv.start = int(self.argv.start) - day_diff
+            self.argv.end = int(self.argv.end) - day_diff
         collector_proc = self.start_collector()
         check_log_file_updates(collector_proc, self.log_file)
 
@@ -53,8 +58,8 @@ class ApiPerformanceTest(object):
                    "samples?limit=5000", "samples?limit=10000",
                    "samples?limit=40000","meters",
                    "meters/instance/statistics", "resources"]
-        with open(self.argv.profile_dir + "/api-time", "a") as f:
-            url = "http://localhost:%s/v2/" % self.argv
+        with open(self.profile_dir + "/api-time", "w") as f:
+            url = "http://localhost:%s/v2/" % self.argv.api_port
             for query in queries:
                 cmd = ("requests.get('%(url)s%(q)s', "
                        "headers={'X-Auth-Token':'%(token)s'})" %
@@ -117,7 +122,12 @@ def get_parser():
         default='/usr/bin/local/',
         help="Directory with ceilometer binaries"
     )
-
+    parser.add_argument(
+        '--generate_multiplier',
+        type=int,
+        default=1,
+        help="Count of sample generators which work parallel"
+    )
     return parser
 
 
@@ -154,7 +164,7 @@ def main(argv):
         backend_result_dir = "%s/ceilometer_test_%s" % (result_dir, conn[:5])
         mkdir(backend_result_dir)
         config_file = create_config_file(args, conn, backend_result_dir)
-        argv.config_file = config_file
+        args.config_file = config_file
         dbtools.clear_and_dbsync(config_file)
         CollectorPerformanceTest(args,
                                  config_file,

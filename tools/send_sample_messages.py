@@ -83,8 +83,6 @@ def send_test_data(args):
             send_batch(args.rabbit_topic, batch, rpc_client)
             batch = []
         batch_count += 1
-        rate = batch_count / (time.time() - start_time)
-        print("Rate is %.2f" % rate)
 
 
 def main(argv=None):
