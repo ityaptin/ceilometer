@@ -43,17 +43,17 @@ class AgentManager(agent.AgentManager):
             'central', group_prefix=cfg.CONF.central.partitioning_group_prefix)
 
     def interval_task(self, task):
-        try:
-            self.keystone = ksclient.Client(
-                username=cfg.CONF.service_credentials.os_username,
-                password=cfg.CONF.service_credentials.os_password,
-                tenant_id=cfg.CONF.service_credentials.os_tenant_id,
-                tenant_name=cfg.CONF.service_credentials.os_tenant_name,
-                cacert=cfg.CONF.service_credentials.os_cacert,
-                auth_url=cfg.CONF.service_credentials.os_auth_url,
-                region_name=cfg.CONF.service_credentials.os_region_name,
-                insecure=cfg.CONF.service_credentials.insecure)
-        except Exception as e:
-            self.keystone = e
+            try:
+                self.keystone = ksclient.Client(
+                    username=cfg.CONF.service_credentials.os_username,
+                    password=cfg.CONF.service_credentials.os_password,
+                    tenant_id=cfg.CONF.service_credentials.os_tenant_id,
+                    tenant_name=cfg.CONF.service_credentials.os_tenant_name,
+                    cacert=cfg.CONF.service_credentials.os_cacert,
+                    auth_url=cfg.CONF.service_credentials.os_auth_url,
+                    region_name=cfg.CONF.service_credentials.os_region_name,
+                    insecure=cfg.CONF.service_credentials.insecure)
+            except Exception as e:
+                self.keystone = e
 
-        super(AgentManager, self).interval_task(task)
+            super(AgentManager, self).interval_task(task)

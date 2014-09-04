@@ -10,38 +10,22 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-"""Base class for plugins.
-"""
 
 import cProfile
 from eventlet import patcher
 
 threading = patcher.original('threading')
 import time
-from oslo.config import cfg
-
-from ceilometer.openstack.common import log
-
-LOG = log.getLogger(__name__)
-
-profiler_opts = [
-    cfg.BoolOpt('use_profiler',
-                default=False),
-    cfg.StrOpt('profile_dir',
-               default=""),
-]
-cfg.CONF.register_opts(profiler_opts)
 
 
-def profile(service):
+def profile(directory, service, period=60):
     profiler = cProfile.Profile()
 
     def dump_stats():
 
-        directory = cfg.CONF.profile_dir
         index = 0
         while True:
-            time.sleep(60)
+            time.sleep(period)
             index += 1
             profiler.disable()
             fname = directory + '/%s-%s.pstats' % (service, index)
