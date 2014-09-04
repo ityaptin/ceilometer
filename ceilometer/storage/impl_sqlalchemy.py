@@ -22,18 +22,18 @@ import operator
 import os
 
 from oslo.config import cfg
+from oslo.db import exception as dbexc
+from oslo.db.sqlalchemy import migration
+from oslo.db.sqlalchemy import session as db_session
+from oslo.utils import timeutils
 import six
 from sqlalchemy import and_
 from sqlalchemy import distinct
 from sqlalchemy import func
 from sqlalchemy.orm import aliased
 
-from ceilometer.openstack.common.db import exception as dbexc
-from ceilometer.openstack.common.db.sqlalchemy import migration
-import ceilometer.openstack.common.db.sqlalchemy.session as sqlalchemy_session
 from ceilometer.openstack.common.gettextutils import _
 from ceilometer.openstack.common import log
-from ceilometer.openstack.common import timeutils
 from ceilometer import storage
 from ceilometer.storage import base
 from ceilometer.storage import models as api_models
@@ -211,9 +211,9 @@ class Connection(base.Connection):
     )
 
     def __init__(self, url):
-        self._engine_facade = sqlalchemy_session.EngineFacade.from_config(
+        self._engine_facade = db_session.EngineFacade(
             url,
-            cfg.CONF  # TODO(Alexei_987) Remove access to global CONF object
+            **dict(cfg.CONF.database.items())
         )
 
     def upgrade(self):
@@ -308,7 +308,7 @@ class Connection(base.Connection):
                  .delete())
 
             rows = sample_q.delete()
-            # remove Meter defintions with no matching samples
+            # remove Meter definitions with no matching samples
             (session.query(models.Meter)
              .filter(~models.Meter.samples.any())
              .delete(synchronize_session='fetch'))
@@ -334,51 +334,36 @@ class Connection(base.Connection):
         if pagination:
             raise NotImplementedError('Pagination not implemented')
 
-        metaquery = metaquery or {}
-
-        def _apply_filters(query):
-            # TODO(gordc) this should be merged with make_query_from_filter
-            for column, value in [(models.Sample.resource_id, resource),
-                                  (models.Sample.user_id, user),
-                                  (models.Sample.project_id, project),
-                                  (models.Sample.source_id, source)]:
-                if value:
-                    query = query.filter(column == value)
-            if metaquery:
-                query = apply_metaquery_filter(session, query, metaquery)
-            if start_timestamp:
-                if start_timestamp_op == 'gt':
-                    query = query.filter(
-                        models.Sample.timestamp > start_timestamp)
-                else:
-                    query = query.filter(
-                        models.Sample.timestamp >= start_timestamp)
-            if end_timestamp:
-                if end_timestamp_op == 'le':
-                    query = query.filter(
-                        models.Sample.timestamp <= end_timestamp)
-                else:
-                    query = query.filter(
-                        models.Sample.timestamp < end_timestamp)
-            return query
+        s_filter = storage.SampleFilter(user=user,
+                                        project=project,
+                                        source=source,
+                                        start=start_timestamp,
+                                        start_timestamp_op=start_timestamp_op,
+                                        end=end_timestamp,
+                                        end_timestamp_op=end_timestamp_op,
+                                        metaquery=metaquery,
+                                        resource=resource)
 
         session = self._engine_facade.get_session()
         # get list of resource_ids
         res_q = session.query(distinct(models.Sample.resource_id))
-        res_q = _apply_filters(res_q)
+        res_q = make_query_from_filter(session, res_q, s_filter,
+                                       require_meter=False)
 
         for res_id in res_q.all():
             # get latest Sample
             max_q = (session.query(models.Sample)
                      .filter(models.Sample.resource_id == res_id[0]))
-            max_q = _apply_filters(max_q)
+            max_q = make_query_from_filter(session, max_q, s_filter,
+                                           require_meter=False)
             max_q = max_q.order_by(models.Sample.timestamp.desc(),
                                    models.Sample.id.desc()).limit(1)
 
             # get the min timestamp value.
             min_q = (session.query(models.Sample.timestamp)
                      .filter(models.Sample.resource_id == res_id[0]))
-            min_q = _apply_filters(min_q)
+            min_q = make_query_from_filter(session, min_q, s_filter,
+                                           require_meter=False)
             min_q = min_q.order_by(models.Sample.timestamp.asc()).limit(1)
 
             sample = max_q.first()
@@ -408,19 +393,11 @@ class Connection(base.Connection):
         if pagination:
             raise NotImplementedError('Pagination not implemented')
 
-        metaquery = metaquery or {}
-
-        def _apply_filters(query):
-            # TODO(gordc) this should be merged with make_query_from_filter
-            for column, value in [(models.Sample.resource_id, resource),
-                                  (models.Sample.user_id, user),
-                                  (models.Sample.project_id, project),
-                                  (models.Sample.source_id, source)]:
-                if value:
-                    query = query.filter(column == value)
-            if metaquery:
-                query = apply_metaquery_filter(session, query, metaquery)
-            return query
+        s_filter = storage.SampleFilter(user=user,
+                                        project=project,
+                                        source=source,
+                                        metaquery=metaquery,
+                                        resource=resource)
 
         session = self._engine_facade.get_session()
 
@@ -441,7 +418,8 @@ class Connection(base.Connection):
         query_sample = (session.query(models.MeterSample).
                         join(sample_subq, models.MeterSample.id ==
                         sample_subq.c.id))
-        query_sample = _apply_filters(query_sample)
+        query_sample = make_query_from_filter(session, query_sample, s_filter,
+                                              require_meter=False)
 
         for sample in query_sample.all():
             yield api_models.Meter(
@@ -714,7 +692,7 @@ class Connection(base.Connection):
 
         # Note: we don't flush here, explicitly (unless a new trait or event
         # does it). Otherwise, just wait until all the Events are staged.
-        return (event, new_traits)
+        return event, new_traits
 
     def record_events(self, event_models):
         """Write the events to SQL database via sqlalchemy.
@@ -792,19 +770,14 @@ class Connection(base.Connection):
                     # Build a sub query that joins Trait to TraitType
                     # where the trait name matches
                     trait_name = trait_filter.pop('key')
+                    op = trait_filter.pop('op', 'eq')
                     conditions = [models.Trait.trait_type_id ==
                                   models.TraitType.id,
                                   models.TraitType.desc == trait_name]
 
                     for key, value in six.iteritems(trait_filter):
-                        if key == 'string':
-                            conditions.append(models.Trait.t_string == value)
-                        elif key == 'integer':
-                            conditions.append(models.Trait.t_int == value)
-                        elif key == 'datetime':
-                            conditions.append(models.Trait.t_datetime == value)
-                        elif key == 'float':
-                            conditions.append(models.Trait.t_float == value)
+                        sql_utils.trait_op_condition(conditions,
+                                                     key, value, op)
 
                     trait_query = (session.query(models.Trait.event_id).
                                    join(models.TraitType,

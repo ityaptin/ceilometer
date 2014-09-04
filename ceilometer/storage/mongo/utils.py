@@ -22,20 +22,18 @@
 import time
 
 from oslo.config import cfg
+from oslo.utils import netutils
 import pymongo
 import six
 import weakref
 
 from ceilometer.openstack.common.gettextutils import _
 from ceilometer.openstack.common import log
-from ceilometer.openstack.common import network_utils
 
 LOG = log.getLogger(__name__)
 
-cfg.CONF.import_opt('max_retries', 'ceilometer.openstack.common.db.options',
-                    group="database")
-cfg.CONF.import_opt('retry_interval', 'ceilometer.openstack.common.db.options',
-                    group="database")
+cfg.CONF.import_opt('max_retries', 'oslo.db.options', group="database")
+cfg.CONF.import_opt('retry_interval', 'oslo.db.options', group="database")
 
 EVENT_TRAIT_TYPES = {'none': 0, 'string': 1, 'integer': 2, 'float': 3,
                      'datetime': 4}
@@ -171,7 +169,7 @@ class ConnectionPool(object):
             client = self._pool.get(pool_key)()
             if client:
                 return client
-        splitted_url = network_utils.urlsplit(url)
+        splitted_url = netutils.urlsplit(url)
         log_data = {'db': splitted_url.scheme,
                     'nodelist': connection_options['nodelist']}
         LOG.info(_('Connecting to %(db)s on %(nodelist)s') % log_data)
@@ -188,7 +186,7 @@ class ConnectionPool(object):
             try:
                 client = pymongo.MongoClient(url, safe=True)
             except pymongo.errors.ConnectionFailure as e:
-                if max_retries >= 0 and attempts >= max_retries:
+                if 0 <= max_retries <= attempts:
                     LOG.error(_('Unable to connect to the database after '
                                 '%(retries)d retries. Giving up.') %
                               {'retries': max_retries})

@@ -18,11 +18,11 @@
 import collections
 import re
 
+from oslo.utils import timeutils
 import six
 
 from ceilometer.openstack.common.gettextutils import _
 from ceilometer.openstack.common import log
-from ceilometer.openstack.common import timeutils
 from ceilometer import sample
 from ceilometer import transformer
 
@@ -92,7 +92,7 @@ class ScalingTransformer(transformer.TransformerBase):
     def handle_sample(self, context, s):
         """Handle a sample, converting if necessary."""
         LOG.debug(_('handling sample %s'), (s,))
-        if (self.source.get('unit', s.unit) == s.unit):
+        if self.source.get('unit', s.unit) == s.unit:
             s = self._convert(s)
             LOG.debug(_('converted to: %s'), (s,))
         return s
@@ -143,10 +143,10 @@ class RateOfChangeTransformer(ScalingTransformer):
 
 
 class AggregatorTransformer(ScalingTransformer):
-    """Transformer that aggregate sample.
+    """Transformer that aggregates samples.
 
-    Aggregation goes until a threshold or/and a retention_time, and then flush
-    them out in the wild.
+    Aggregation goes until a threshold or/and a retention_time, and then
+    flushes them out into the wild.
 
     Example:
       To aggregate sample by resource_metadata and keep the
