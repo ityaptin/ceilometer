@@ -31,6 +31,18 @@ from ceilometer import utils
 
 LOG = log.getLogger(__name__)
 
+AVAILABLE_CAPABILITIES = {
+    'meters': {'query': {'simple': True,
+                         'metadata': True}},
+    'resources': {'query': {'simple': True,
+                            'metadata': True}},
+}
+
+
+AVAILABLE_STORAGE_CAPABILITIES = {
+    'storage': {'production_ready': True},
+}
+
 
 class Connection(base.Connection):
     """Put the resource data into an ElasticSearch db.
@@ -74,12 +86,20 @@ class Connection(base.Connection):
       }
     """
 
+    CAPABILITIES = utils.update_nested(base.Connection.CAPABILITIES,
+                                       AVAILABLE_CAPABILITIES)
+    STORAGE_CAPABILITIES = utils.update_nested(
+        base.Connection.STORAGE_CAPABILITIES,
+        AVAILABLE_STORAGE_CAPABILITIES,
+    )
+
     index_resource = 'resource'
     index_meter = 'meter'
 
     def __init__(self, url):
-        url_split = netutils.urlsplit(url)
-        self.conn = es.Elasticsearch(url_split.netloc)
+        # url_split = netutils.urlsplit(url)
+        # self.conn = es.Elasticsearch(url_split.netloc)
+        self.conn = es.Elasticsearch(url)
 
     def upgrade(self):
         iclient = es.client.IndicesClient(self.conn)
@@ -89,11 +109,12 @@ class Connection(base.Connection):
                          {'properties':
                           {'first_sample_timestamp': {'type': 'date'},
                            'last_sample_timestamp': {'type': 'date'},
+                           'metadata': {'type': 'nested'}
                            }
                           }
                          }
         }
-        iclient.put_mapping(body=template)
+        iclient.put_template(name='resource_template', body=template)
 
     def get_resources(self, user=None, project=None, source=None,
                       start_timestamp=None, start_timestamp_op=None,
@@ -145,22 +166,25 @@ class Connection(base.Connection):
         if metaquery is not None:
             nest_filter = []
             for key, value in six.iteritems(metaquery):
-                nest_filter.append({'match': {'metadata.%s' % key: value}})
-            filters.append({'nested': {
-                'path': 'metadata',
-                'query': {'bool': {'must': {nest_filter}}}
+                nest_filter.append({'term': {'metadata.%s' % key: value}})
+            filters.append({
+                'nested': {
+                    'path': 'metadata',
+                    'query': {
+                        'filtered': {
+                            'filter': {'bool': {'must': nest_filter}}}}
             }})
         q_args['body'] = {'query': {'filtered':
                                     {'filter': {'bool': {'must': filters}}}}}
-        results = self.conn.searsh(fields=['_type', '_id', '_source'],
+        results = self.conn.search(fields=['_type', '_id', '_source'],
                                    **q_args)
         for record in results['hits']['hits']:
             yield models.Resource(
                 resource_id=record['_id'],
-                first_sample_timestamp=(record['_source']
-                                        ['first_sample_timestamp']),
-                last_sample_timestamp=(record['_source']
-                                       ['last_sample_timestamp']),
+                first_sample_timestamp=utils.sanitize_timestamp(
+                    record['_source'].get('first_sample_timestamp')),
+                last_sample_timestamp=utils.sanitize_timestamp
+                (record['_source']['last_sample_timestamp']),
                 source=record['_type'],
                 project_id=record['_source'].get('project_id'),
                 user_id=record['_source'].get('user_id'),
@@ -200,23 +224,25 @@ class Connection(base.Connection):
         if metaquery is not None:
             nest_filter = []
             for key, value in six.iteritems(metaquery):
-                nest_filter.append({'match': {'metadata.%s' % key: value}})
-            filters.append({'nested': {
-                'path': 'metadata',
-                'query': {'bool': {'must': {nest_filter}}}
+                nest_filter.append({'term': {'metadata.%s' % key: value}})
+            filters.append({
+                'nested': {
+                    'path': 'metadata',
+                    'query': {
+                        'filtered': {
+                            'filter': {'bool': {'must': nest_filter}}}}
             }})
         q_args['body'] = {'query': {'filtered':
                                     {'filter': {'bool': {'must': filters}}}}}
-        results = self.conn.searsh(fields=['_type', '_id', '_source'],
+        results = self.conn.search(fields=['_type', '_id', '_source'],
                                    **q_args)
         for record in results['hits']['hits']:
             yield models.Meter(
                 name=record['_id'],
                 type=record['_source']['meter_type'],
                 unit=record['_source']['meter_unit'],
-                resource=record['_type'],
+                resource_id=record['_type'],
                 source=record['_source']['source'],
                 project_id=record['_source'].get('project_id'),
                 user_id=record['_source'].get('user_id'),
-                metadata=record['_source']['metadata']
             )
