@@ -1,12 +1,4 @@
 #
-# Copyright 2012 New Dream Network, LLC (DreamHost)
-# Copyright 2013 eNovance
-# Copyright 2014 Red Hat, Inc
-#
-# Authors: Doug Hellmann <doug.hellmann@dreamhost.com>
-#          Julien Danjou <julien@danjou.info>
-#          Eoghan Glynn <eglynn@redhat.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -20,23 +12,14 @@
 # under the License.
 """InfluxDB meters storage backend"""
 
-import copy
-import datetime
-import uuid
-
 import influxdb
 import influxdb.exceptions
-
-from oslo_config import cfg
+import influxdb.resultset
 from oslo_log import log
-from oslo_utils import timeutils
-import oslo_utils
 import six.moves.urllib.parse as urlparse
 import operator
 
-from ceilometer import storage
 from ceilometer.storage import base
-from ceilometer.storage import models
 from ceilometer import utils
 from ceilometer.lma.influx import utils as influx_utils
 
@@ -99,6 +82,16 @@ class Connection(base.Connection):
                              period=None,
                              groupby=None,
                              aggregate=None):
+        """Return an iterable of models.Statistics instance.
+
+        Items are containing meter statistics described by the query
+        parameters. The filter must have a meter value set.
+        :param sample_filter: Simple filter that matches samples before
+        aggregate.
+        :param period: Size of aggregation periods in seconds.
+        :param groupby: List of groupby fields.
+        :param aggregate: Aggregate functions with params.
+        """
         if not sample_filter.start_timestamp:
             start_timestamp = self.get_oldest_timestamp(sample_filter)
             sample_filter.start_timestamp = start_timestamp
@@ -123,12 +116,22 @@ class Connection(base.Connection):
         return start_timestamp
 
     def query(self, q):
+        """Make a query to InfluxDB database.
+
+          :param q: Query string in InfluxDB query format.
+          :returns a response ResultSet
+        """
         try:
             return self.conn.query(q)
-        except influxdb.InfluxDBClient as e:
-            return
+        except influxdb.exceptions.InfluxDBClientError as e:
+            LOG.exception("Client error during the InfluxDB query: %s", e)
+            return influxdb.resultset.ResultSet({})
 
     def get_samples(self, sample_filter, limit=None):
+        """Return an iterable of model.Sample instances.
+
+        :param sample_filter: Filter.
+        :param limit: Maximum number of results to return."""
         if limit is 0:
             return
         response = self.query(
