@@ -32,6 +32,7 @@ from oslo_log import log
 from oslo_utils import timeutils
 import oslo_utils
 import six.moves.urllib.parse as urlparse
+import operator
 
 from ceilometer import storage
 from ceilometer.storage import base
@@ -90,7 +91,7 @@ class Connection(base.Connection):
         try:
             self.conn.create_database(self.database)
         except influxdb.exceptions.InfluxDBClientError as e:
-            if not "database already exists" in e.content:
+            if "database already exists" not in e.content:
                 raise
 
     def get_meter_statistics(self,
@@ -102,35 +103,39 @@ class Connection(base.Connection):
             start_timestamp = self.get_oldest_timestamp(sample_filter)
             sample_filter.start_timestamp = start_timestamp
 
-        query = influx_utils.combine_aggregate_query(sample_filter, period,
+        query = influx_utils.make_aggregate_query(sample_filter, period,
                                                      groupby, aggregate)
-        response = self.make_query(query)
+        response = self.query(query)
+        stats = []
         for serie, points in response.items():
             measurement, tags = serie
             for point in points:
-                yield influx_utils.point_to_stat(point, tags, period,
-                                                 aggregate)
+                 stats.append(
+                     influx_utils.point_to_stat(point, tags,
+                                                period, aggregate))
+        return stats.sort(key=operator.itemgetter("period_start"))
 
     def get_oldest_timestamp(self, sample_filter):
-        response = self.make_query(
-            influx_utils.combine_time_bounds_query(sample_filter))
+        response = self.query(
+            influx_utils.make_time_bounds_query(sample_filter))
         first_point = response.get_points(MEASUREMENT).next()
         start_timestamp = utils.sanitize_timestamp(first_point['first'])
         return start_timestamp
 
-    def make_query(self, query):
+    def query(self, q):
         try:
-            print query
-            return self.conn.query(query)
+            return self.conn.query(q)
         except influxdb.InfluxDBClient as e:
             return
 
     def get_samples(self, sample_filter, limit=None):
         if limit is 0:
             return
-        response = self.make_query(
-            influx_utils.combine_list_query(sample_filter, limit))
+        response = self.query(
+            influx_utils.make_list_query(sample_filter, limit))
+        samples = []
         for point in response.get_points("ceilometer"):
-            yield influx_utils.point_to_sample(point)
+            samples.append(influx_utils.point_to_sample(point))
+        return reversed(samples)
 
 

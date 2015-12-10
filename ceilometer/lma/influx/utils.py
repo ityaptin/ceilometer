@@ -17,7 +17,7 @@ DETRANSITION = {
 OP_SIGN = {'eq': '=', 'lt': '<', 'le': '<=', 'ne': '!=', 'gt': '>', 'ge': '>='}
 
 
-def combine_filter_query(sample_filter, require_meter=False):
+def make_simple_filter_query(sample_filter, require_meter=False):
     expressions = []
     if sample_filter.user:
         expressions.append(("user_id", "=", sample_filter.user))
@@ -57,13 +57,13 @@ def combine_filter_query(sample_filter, require_meter=False):
     return query
 
 
-def combine_groupby(period, groupby):
+def make_groupby(period, groupby):
     return ", ".join((groupby or []) +
                      (["time({period}s)".format(period=period)]
                       if period > 0 else []))
 
 
-def combine_aggregation(aggregate):
+def make_aggregation(aggregate):
     aggregates = []
 
     if not aggregate:
@@ -74,36 +74,36 @@ def combine_aggregation(aggregate):
             aggregates.append("{func}(value) as {func}".format(
                 func=TRANSITION.get(func, func)))
 
-    return ", ".join(aggregates + combine_duration_aggregates())
+    return ", ".join(aggregates + make_duration_aggregates())
 
 
-def combine_duration_aggregates():
+def make_duration_aggregates():
     duration_aggregates = ["{func}(timestamp) as {func}".format(func=func)
                            for func in ("last", "first")]
     return duration_aggregates
 
 
-def combine_aggregate_query(sample_filter, period, groupby, aggregate):
+def make_aggregate_query(sample_filter, period, groupby, aggregate):
     query = ("SELECT {select} FROM {measurement} WHERE {where} ".format(
-        select=combine_aggregation(aggregate),
-        where=combine_filter_query(sample_filter), measurement=MEASUREMENT
+        select=make_aggregation(aggregate),
+        where=make_simple_filter_query(sample_filter), measurement=MEASUREMENT
     ))
-    groupby = combine_groupby(period, groupby)
+    groupby = make_groupby(period, groupby)
     if groupby:
         query += "GROUP BY {groupby} fill(none)".format(groupby=groupby)
     return query
 
 
-def combine_time_bounds_query(sample_filter):
+def make_time_bounds_query(sample_filter):
     return "SELECT {select} from {measurement} WHERE {where}".format(
-        select=",".join(combine_duration_aggregates()),
-        where=combine_filter_query(sample_filter),
+        select=",".join(make_duration_aggregates()),
+        where=make_simple_filter_query(sample_filter),
         measurement=MEASUREMENT
     )
 
 
-def combine_list_query(sample_filter, limit):
-    where = combine_filter_query(sample_filter)
+def make_list_query(sample_filter, limit):
+    where = make_simple_filter_query(sample_filter)
     return ("SELECT * FROM {measurement} WHERE {where} LIMIT {limit}".format(
         measurement=MEASUREMENT,
         where=where,
