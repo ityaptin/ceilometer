@@ -50,8 +50,8 @@ class Connection(base.Connection):
             auth = user_def.split(":", 1)
             if len(auth) != 2:
                 raise ValueError()
-            user = user_def[0]
-            pwd = user_def[1]
+            user = auth[0]
+            pwd = auth[1]
         if host_def:
             loc = host_def.split(":", 1)
             host = loc[0]
