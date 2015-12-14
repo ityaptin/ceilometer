@@ -64,6 +64,11 @@ OPTS = [
                help="The max length of resources id in DB2 nosql, "
                     "the value should be larger than len(hostname) * 2 "
                     "as compute node's resource id is <hostname>_<nodename>."),
+    cfg.StrOpt('resource_connection',
+               secret=True,
+               default=None,
+               help='The connection string used to connect to the resource '
+               'database. (if unset, connection is used)'),
 ]
 
 cfg.CONF.register_opts(OPTS, group='database')
