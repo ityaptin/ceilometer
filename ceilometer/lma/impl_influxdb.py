@@ -101,11 +101,11 @@ class Connection(base.Connection):
         stats = []
         for serie, points in response.items():
             measurement, tags = serie
-            for point in points:
+            for point in points or []:
                  stats.append(
                      influx_utils.point_to_stat(point, tags,
                                                 period, aggregate))
-        return stats.sort(key=operator.itemgetter("period_start"))
+        return sorted(stats, key=lambda stat: stat.period_start)
 
     def get_oldest_timestamp(self, sample_filter):
         response = self.query(
@@ -138,6 +138,6 @@ class Connection(base.Connection):
         samples = []
         for point in response.get_points("ceilometer"):
             samples.append(influx_utils.point_to_sample(point))
-        return reversed(samples)
+        return sorted(samples, key=lambda sample: sample.timestamp)
 
 

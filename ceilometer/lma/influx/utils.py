@@ -70,7 +70,8 @@ def make_aggregation(aggregate):
         for func in DEFAULT_AGGREGATES:
             aggregates.append("{func}(value) as {func}".format(func=func))
     else:
-        for func in aggregate:
+        for description in aggregate:
+            func = description.func
             aggregates.append("{func}(value) as {func}".format(
                 func=TRANSITION.get(func, func)))
 
@@ -118,10 +119,11 @@ def point_to_stat(point, tags, period, aggregate):
             kwargs[DETRANSITION.get(func, func)] = point.get(func)
     else:
         kwargs['aggregate'] = {}
-        for func in aggregate:
+        for description in aggregate:
+            func = description.func
             kwargs['aggregate'][func] = point.get(TRANSITION.get(func, func))
 
-    kwargs["groupby"] = tags
+    kwargs["groupby"] = tags or {}
     kwargs["duration_start"] = utils.sanitize_timestamp(point["first"])
     kwargs["duration_end"] = utils.sanitize_timestamp(point["last"])
     kwargs["duration"] = (kwargs["duration_end"] -

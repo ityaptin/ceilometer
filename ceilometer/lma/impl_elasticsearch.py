@@ -97,9 +97,8 @@ class Connection(base.Connection):
     index_meter = 'meter'
 
     def __init__(self, url):
-        # url_split = netutils.urlsplit(url)
-        # self.conn = es.Elasticsearch(url_split.netloc)
-        self.conn = es.Elasticsearch(url)
+        url_split = netutils.urlsplit(url)
+        self.conn = es.Elasticsearch(url_split.netloc)
 
     def upgrade(self):
         iclient = es.client.IndicesClient(self.conn)
