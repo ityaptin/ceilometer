@@ -146,7 +146,7 @@ class Connection(base.Connection):
         if source is not None:
             q_args['doc_type'] = source
         if resource is not None:
-            q_args['_id'] = resource
+            filters.append({'term': {'_id': resource}})
         if user is not None:
             filters.append({'term': {'user_id': user}})
         if project is not None:
