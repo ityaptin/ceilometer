@@ -18,16 +18,6 @@ from ceilometer.lma import impl_elasticsearch as es
 from ceilometer.lma import impl_influxdb as influx
 from ceilometer.storage import base
 
-OPTS = [
-    cfg.StrOpt('resource_connection',
-               secret=True,
-               default=None,
-               help='The connection string used to connect to the resource '
-               'database. (if unset, connection is used)'),
-]
-
-cfg.CONF.register_opts(OPTS, group='database')
-
 
 class Connection(base.Connection):
     def __init__(self, url):
