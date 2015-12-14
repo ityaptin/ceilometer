@@ -105,7 +105,7 @@ class Connection(base.Connection):
                  stats.append(
                      influx_utils.point_to_stat(point, tags,
                                                 period, aggregate))
-        return sorted(stats, key=lambda stat: stat.period_start)
+        return [stat for stat in stats if stat]
 
     def get_oldest_timestamp(self, sample_filter):
         response = self.query(
@@ -120,6 +120,7 @@ class Connection(base.Connection):
           :param q: Query string in InfluxDB query format.
           :returns a response ResultSet
         """
+        LOG.info(q)
         try:
             return self.conn.query(q)
         except influxdb.exceptions.InfluxDBClientError as e:
@@ -138,6 +139,6 @@ class Connection(base.Connection):
         samples = []
         for point in response.get_points("ceilometer"):
             samples.append(influx_utils.point_to_sample(point))
-        return sorted(samples, key=lambda sample: sample.timestamp)
+        return samples
 
 

@@ -165,7 +165,7 @@ class Connection(base.Connection):
         if metaquery is not None:
             nest_filter = []
             for key, value in six.iteritems(metaquery):
-                nest_filter.append({'term': {'metadata.%s' % key: value}})
+                nest_filter.append({'term': {key: value}})
             filters.append({
                 'nested': {
                     'path': 'metadata',
@@ -223,7 +223,7 @@ class Connection(base.Connection):
         if metaquery is not None:
             nest_filter = []
             for key, value in six.iteritems(metaquery):
-                nest_filter.append({'term': {'metadata.%s' % key: value}})
+                nest_filter.append({'term': {key: value}})
             filters.append({
                 'nested': {
                     'path': 'metadata',

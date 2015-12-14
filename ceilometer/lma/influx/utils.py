@@ -83,37 +83,39 @@ def make_duration_aggregates():
                            for func in ("last", "first")]
     return duration_aggregates
 
+def construct_query(select=None, where=None, group=None, order=None, limit=None):
+    return " ".join((
+        "SELECT {select} FROM {name}".format(name=MEASUREMENT, select=select)
+        if select else "SELECT * FROM {name}".format(name=MEASUREMENT),
+        "WHERE {where}".format(where=where) if where else "",
+        "GROUP BY {group} file(none)".format(group=group) if group else "",
+        "ORDER BY time desc" if order else "",
+        "LIMIT {limit}".format(limit=limit) if limit else ""
+    ))
+
 
 def make_aggregate_query(sample_filter, period, groupby, aggregate):
-    query = ("SELECT {select} FROM {measurement} WHERE {where} ".format(
-        select=make_aggregation(aggregate),
-        where=make_simple_filter_query(sample_filter), measurement=MEASUREMENT
-    ))
-    groupby = make_groupby(period, groupby)
-    if groupby:
-        query += "GROUP BY {groupby} fill(none)".format(groupby=groupby)
-    return query
+    return construct_query(make_aggregation(aggregate),
+                           make_simple_filter_query(sample_filter),
+                           make_groupby(period, groupby),
+                           order=True)
 
 
 def make_time_bounds_query(sample_filter):
-    return "SELECT {select} from {measurement} WHERE {where}".format(
-        select=",".join(make_duration_aggregates()),
-        where=make_simple_filter_query(sample_filter),
-        measurement=MEASUREMENT
-    )
+    return construct_query(make_duration_aggregates(),
+                           make_simple_filter_query(sample_filter))
 
 
 def make_list_query(sample_filter, limit):
-    where = make_simple_filter_query(sample_filter)
-    return ("SELECT * FROM {measurement} WHERE {where} LIMIT {limit}".format(
-        measurement=MEASUREMENT,
-        where=where,
-        limit=limit
-    ))
+    return construct_query(where=make_simple_filter_query(sample_filter),
+                           limit=limit,
+                           order=True)
 
 
 def point_to_stat(point, tags, period, aggregate):
     kwargs = {}
+    if not point['last'] or not point['first']:
+        return
     if not aggregate:
         for func in DEFAULT_AGGREGATES:
             kwargs[DETRANSITION.get(func, func)] = point.get(func)
