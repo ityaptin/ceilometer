@@ -102,7 +102,7 @@ def make_aggregate_query(sample_filter, period, groupby, aggregate):
 
 
 def make_time_bounds_query(sample_filter):
-    return construct_query(make_duration_aggregates(),
+    return construct_query(", ".join(make_duration_aggregates()),
                            make_simple_filter_query(sample_filter))
 
 

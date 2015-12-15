@@ -102,8 +102,8 @@ class Connection(base.Connection):
         for serie, points in response.items():
             measurement, tags = serie
             for point in points or []:
-                 stats.append(
-                     influx_utils.point_to_stat(point, tags,
+                stats.append(
+                    influx_utils.point_to_stat(point, tags,
                                                 period, aggregate))
         return [stat for stat in stats if stat]
 
