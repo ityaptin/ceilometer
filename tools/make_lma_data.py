@@ -166,7 +166,7 @@ def write_resources(client, resource_tuples, timestamps):
     def _build_bulk_resources():
         for resource in resource_tuples:
             yield {
-                '_op_type': 'create',
+                '_op_type': 'index',
                 '_index': index,
                 '_type': r_type,
                 '_id': resource[0],
@@ -195,7 +195,7 @@ def write_meters(client, resource_tuples):
         for resource in resource_tuples:
             meter = resource[4]
             yield {
-                '_op_type': 'create',
+                '_op_type': 'index',
                 '_index': index,
                 '_type': resource[0],
                 '_id': meter['counter_name'],
