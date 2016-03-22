@@ -26,8 +26,21 @@ from ceilometer.storage.es import utils as es_utils
 from ceilometer.storage.influx import utils as influx_utils
 from ceilometer import utils
 
+
 LOG = log.getLogger(__name__)
 
+OPTS = [
+    cfg.StrOpt('resource_connection',
+               secret=True,
+               help='The connection string used to connect to the resource '
+               'database.'),
+    cfg.IntOpt('influxdb_replication',
+               min=1,
+               default=1,
+               help="Replication factor for the InfluxDB retention policy.")
+]
+
+cfg.CONF.register_opts(OPTS, group='database')
 
 AVAILABLE_CAPABILITIES = {
     'resources': {'query': {'simple': True,
@@ -147,6 +160,21 @@ class Connection(base.Connection):
         except influxdb.exceptions.InfluxDBClientError as e:
             if "database already exists" not in e.content:
                 raise
+        self.sample_connection.create_retention_policy(
+                    name=influx_utils.RETENTION_POLICY_NAME,
+                    duration="INF",
+                    replication=cfg.CONF.database.influxdb_replication,
+                    database=self.database,
+                    default=True)
+        if cfg.CONF.database.metering_time_to_live > 0:
+            duration = "%ss" % cfg.CONF.database.metering_time_to_live
+            self.sample_connection.alter_retention_policy(
+                name=influx_utils.RETENTION_POLICY_NAME,
+                database=self.database,
+                duration=duration,
+                replication=cfg.CONF.database.influxdb_replication,
+                default=True
+            )
 
     def get_meters(self, user=None, project=None, resource=None, source=None,
                    metaquery=None, limit=None, unique=None):

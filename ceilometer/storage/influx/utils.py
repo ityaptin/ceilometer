@@ -20,6 +20,7 @@ import six.moves.urllib.parse as urlparse
 from ceilometer.storage import models
 from ceilometer import utils
 
+RETENTION_POLICY_NAME = "ceilometer_ttl"
 
 MEASUREMENT = "sample"
 
