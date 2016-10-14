@@ -33,7 +33,9 @@ NOTIFICATION = {
     'timestamp': u'2015-06-1909: 19: 35.786893',
     'payload': {u'user_id': u'e1d870e51c7340cb9d555b15cbfcaec2',
                 u'resource_id': u'bea70e51c7340cb9d555b15cbfcaec23',
-                u'timestamp': u'2015-06-19T09: 19: 35.785330',
+                u'timestamp': u'2015-06-19T09:19:35.785330',
+                u'created_at': u'2015-06-19T09:25:35.785330',
+                u'launched_at': u'2015-06-19T09:25:40.785330',
                 u'message_signature': u'fake_signature1',
                 u'resource_metadata': {u'foo': u'bar'},
                 u'source': u'30be1fc9a03c4e94ab05c403a8a377f2: openstack',
@@ -240,10 +242,10 @@ class TestMeterDefinition(test.BaseTestCase):
         try:
             notifications.MeterDefinition(cfg, mock.Mock())
         except declarative.DefinitionException as e:
-            self.assertEqual("Required fields ['name', 'type', 'event_type',"
-                             " 'unit', 'volume', 'resource_id']"
-                             " not specified",
-                             encodeutils.exception_to_unicode(e))
+            self.assertIn("Required fields ['name', 'type', 'event_type',"
+                          " 'unit', 'volume', 'resource_id']"
+                          " not specified",
+                          encodeutils.exception_to_unicode(e))
 
     def test_bad_type_cfg_definition(self):
         cfg = dict(name="test", type="foo", event_type="bar.create",
@@ -252,8 +254,8 @@ class TestMeterDefinition(test.BaseTestCase):
         try:
             notifications.MeterDefinition(cfg, mock.Mock())
         except declarative.DefinitionException as e:
-            self.assertEqual("Invalid type foo specified",
-                             encodeutils.exception_to_unicode(e))
+            self.assertIn("Invalid type foo specified",
+                          encodeutils.exception_to_unicode(e))
 
 
 class TestMeterProcessing(test.BaseTestCase):
@@ -262,7 +264,8 @@ class TestMeterProcessing(test.BaseTestCase):
         super(TestMeterProcessing, self).setUp()
         self.CONF = self.useFixture(fixture_config.Config()).conf
         ceilometer_service.prepare_service(argv=[], config_files=[])
-        self.handler = notifications.ProcessMeterNotifications(mock.Mock())
+        self.handler = notifications.ProcessMeterNotifications(
+            mock.Mock(conf=self.CONF))
 
     def test_fallback_meter_path(self):
         self.CONF.set_override('meter_definitions_cfg_file',
@@ -310,9 +313,9 @@ class TestMeterProcessing(test.BaseTestCase):
                              project_id="$.payload.project_id")]})
         self._load_meter_def_file(cfg)
         self.assertEqual(2, len(self.handler.definitions))
-        LOG.error.assert_called_with(
-            "Error loading meter definition : "
-            "Invalid type bad_type specified")
+        args, kwargs = LOG.error.call_args_list[0]
+        self.assertEqual("Error loading meter definition: %s", args[0])
+        self.assertTrue(args[1].endswith("Invalid type bad_type specified"))
 
     def test_jsonpath_values_parsed(self):
         cfg = yaml.dump(
@@ -349,12 +352,11 @@ class TestMeterProcessing(test.BaseTestCase):
                              resource_id="$.payload.resource_id",
                              project_id="$.payload.project_id")]})
         self._load_meter_def_file(cfg)
-        c = list(self.handler.process_notification(NOTIFICATION))
-        self.assertEqual(2, len(c))
-        s1 = c[0].as_dict()
-        self.assertEqual('test2', s1['name'])
-        s2 = c[1].as_dict()
-        self.assertEqual('test1', s2['name'])
+        data = list(self.handler.process_notification(NOTIFICATION))
+        self.assertEqual(2, len(data))
+        expected_names = ['test1', 'test2']
+        for s in data:
+            self.assertIn(s.as_dict()['name'], expected_names)
 
     def test_unmatched_meter(self):
         cfg = yaml.dump(
@@ -455,6 +457,23 @@ class TestMeterProcessing(test.BaseTestCase):
         meta['host'] = NOTIFICATION['publisher_id']
         meta['event_type'] = NOTIFICATION['event_type']
         self.assertEqual(meta, s1['resource_metadata'])
+
+    def test_datetime_plugin(self):
+        cfg = yaml.dump(
+            {'metric': [dict(name="test1",
+                        event_type="test.*",
+                        type="gauge",
+                        unit="sec",
+                        volume={"fields": ["$.payload.created_at",
+                                           "$.payload.launched_at"],
+                                "plugin": "timedelta"},
+                        resource_id="$.payload.resource_id",
+                        project_id="$.payload.project_id")]})
+        self._load_meter_def_file(cfg)
+        c = list(self.handler.process_notification(NOTIFICATION))
+        self.assertEqual(1, len(c))
+        s1 = c[0].as_dict()
+        self.assertEqual(5.0, s1['volume'])
 
     def test_custom_metadata(self):
         cfg = yaml.dump(
@@ -674,3 +693,23 @@ class TestMeterProcessing(test.BaseTestCase):
         self.assertEqual(1600, s1['volume'])
         self.assertEqual("prefix-tianst.sh.intel.com",
                          s1['resource_id'])
+
+    def test_duplicate_meter(self):
+        cfg = yaml.dump(
+            {'metric': [dict(name="test1",
+                             event_type="test.create",
+                             type="delta",
+                             unit="B",
+                             volume="$.payload.volume",
+                             resource_id="$.payload.resource_id",
+                             project_id="$.payload.project_id"),
+                        dict(name="test1",
+                             event_type="test.create",
+                             type="delta",
+                             unit="B",
+                             volume="$.payload.volume",
+                             resource_id="$.payload.resource_id",
+                             project_id="$.payload.project_id")]})
+        self._load_meter_def_file(cfg)
+        c = list(self.handler.process_notification(NOTIFICATION))
+        self.assertEqual(1, len(c))

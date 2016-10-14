@@ -13,8 +13,6 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-from oslo_config import cfg
-import oslo_context.context
 import oslo_messaging
 from oslo_messaging import serializer as oslo_serializer
 
@@ -26,16 +24,17 @@ def setup():
     oslo_messaging.set_transport_defaults('ceilometer')
 
 
-def get_transport(url=None, optional=False, cache=True):
+def get_transport(conf, url=None, optional=False, cache=True):
     """Initialise the oslo_messaging layer."""
     global TRANSPORTS, DEFAULT_URL
     cache_key = url or DEFAULT_URL
     transport = TRANSPORTS.get(cache_key)
     if not transport or not cache:
         try:
-            transport = oslo_messaging.get_transport(cfg.CONF, url)
-        except oslo_messaging.InvalidTransportURL as e:
-            if not optional or e.url:
+            transport = oslo_messaging.get_transport(conf, url)
+        except (oslo_messaging.InvalidTransportURL,
+                oslo_messaging.DriverLoadFailure):
+            if not optional or url:
                 # NOTE(sileht): oslo_messaging is configured but unloadable
                 # so reraise the exception
                 raise
@@ -55,55 +54,17 @@ def cleanup():
         del TRANSPORTS[url]
 
 
-class RequestContextSerializer(oslo_messaging.Serializer):
-
-    def __init__(self, base):
-        self._base = base
-
-    def serialize_entity(self, context, entity):
-        if not self._base:
-            return entity
-        return self._base.serialize_entity(context, entity)
-
-    def deserialize_entity(self, context, entity):
-        if not self._base:
-            return entity
-        return self._base.deserialize_entity(context, entity)
-
-    def serialize_context(self, context):
-        return context.to_dict()
-
-    def deserialize_context(self, context):
-        return oslo_context.context.RequestContext.from_dict(context)
+_SERIALIZER = oslo_serializer.JsonPayloadSerializer()
 
 
-_SERIALIZER = RequestContextSerializer(
-    oslo_serializer.JsonPayloadSerializer())
-
-
-def get_rpc_server(transport, topic, endpoint):
-    """Return a configured oslo_messaging rpc server."""
-    cfg.CONF.import_opt('host', 'ceilometer.service')
-    target = oslo_messaging.Target(server=cfg.CONF.host, topic=topic)
-    return oslo_messaging.get_rpc_server(transport, target,
-                                         [endpoint], executor='threading',
-                                         serializer=_SERIALIZER)
-
-
-def get_rpc_client(transport, retry=None, **kwargs):
-    """Return a configured oslo_messaging RPCClient."""
-    target = oslo_messaging.Target(**kwargs)
-    return oslo_messaging.RPCClient(transport, target,
-                                    serializer=_SERIALIZER,
-                                    retry=retry)
-
-
-def get_notification_listener(transport, targets, endpoints,
-                              allow_requeue=False):
+def get_batch_notification_listener(transport, targets, endpoints,
+                                    allow_requeue=False,
+                                    batch_size=1, batch_timeout=None):
     """Return a configured oslo_messaging notification listener."""
-    return oslo_messaging.get_notification_listener(
+    return oslo_messaging.get_batch_notification_listener(
         transport, targets, endpoints, executor='threading',
-        allow_requeue=allow_requeue)
+        allow_requeue=allow_requeue,
+        batch_size=batch_size, batch_timeout=batch_timeout)
 
 
 def get_notifier(transport, publisher_id):
@@ -112,16 +73,15 @@ def get_notifier(transport, publisher_id):
     return notifier.prepare(publisher_id=publisher_id)
 
 
-def convert_to_old_notification_format(priority, ctxt, publisher_id,
-                                       event_type, payload, metadata):
+def convert_to_old_notification_format(priority, notification):
     # FIXME(sileht): temporary convert notification to old format
     # to focus on oslo_messaging migration before refactoring the code to
     # use the new oslo_messaging facilities
-    notification = {'priority': priority,
-                    'payload': payload,
-                    'event_type': event_type,
-                    'publisher_id': publisher_id}
-    notification.update(metadata)
-    for k in ctxt:
-        notification['_context_' + k] = ctxt[k]
+    notification = notification.copy()
+    notification['priority'] = priority
+    notification.update(notification["metadata"])
+    for k in notification['ctxt']:
+        notification['_context_' + k] = notification['ctxt'][k]
+    del notification['ctxt']
+    del notification['metadata']
     return notification

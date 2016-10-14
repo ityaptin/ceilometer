@@ -2,9 +2,6 @@
 # Copyright 2013 Intel Corp.
 # Copyright 2014 Red Hat, Inc
 #
-# Authors: Yunhong Jiang <yunhong.jiang@intel.com>
-#          Eoghan Glynn <eglynn@redhat.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -19,11 +16,14 @@
 
 import abc
 import hashlib
+from itertools import chain
+from operator import methodcaller
 import os
 
 from oslo_config import cfg
 from oslo_log import log
 import oslo_messaging
+from oslo_utils import fnmatch
 from oslo_utils import timeutils
 import six
 from stevedore import extension
@@ -35,7 +35,6 @@ from ceilometer.i18n import _, _LI, _LW
 from ceilometer import publisher
 from ceilometer.publisher import utils as publisher_utils
 from ceilometer import sample as sample_util
-from ceilometer import utils
 
 
 OPTS = [
@@ -79,16 +78,20 @@ class PipelineException(Exception):
 @six.add_metaclass(abc.ABCMeta)
 class PipelineEndpoint(object):
 
-    def __init__(self, context, pipeline):
-        self.publish_context = PublishContext(context, [pipeline])
+    def __init__(self, pipeline):
+        self.filter_rule = oslo_messaging.NotificationFilter(
+            publisher_id=pipeline.name)
+        self.publish_context = PublishContext([pipeline])
+        self.conf = pipeline.conf
 
     @abc.abstractmethod
-    def sample(self, ctxt, publisher_id, event_type, payload, metadata):
+    def sample(self, messages):
         pass
 
 
 class SamplePipelineEndpoint(PipelineEndpoint):
-    def sample(self, ctxt, publisher_id, event_type, payload, metadata):
+    def sample(self, messages):
+        samples = chain.from_iterable(m["payload"] for m in messages)
         samples = [
             sample_util.Sample(name=s['counter_name'],
                                type=s['counter_type'],
@@ -100,15 +103,16 @@ class SamplePipelineEndpoint(PipelineEndpoint):
                                timestamp=s['timestamp'],
                                resource_metadata=s['resource_metadata'],
                                source=s.get('source'))
-            for s in payload if publisher_utils.verify_signature(
-                s, cfg.CONF.publisher.telemetry_secret)
+            for s in samples if publisher_utils.verify_signature(
+                s, self.conf.publisher.telemetry_secret)
         ]
         with self.publish_context as p:
-            p(samples)
+            p(sorted(samples, key=methodcaller('get_iso_timestamp')))
 
 
 class EventPipelineEndpoint(PipelineEndpoint):
-    def sample(self, ctxt, publisher_id, event_type, payload, metadata):
+    def sample(self, messages):
+        events = chain.from_iterable(m["payload"] for m in messages)
         events = [
             models.Event(
                 message_id=ev['message_id'],
@@ -119,21 +123,22 @@ class EventPipelineEndpoint(PipelineEndpoint):
                                      models.Trait.convert_value(dtype, value))
                         for name, dtype, value in ev['traits']],
                 raw=ev.get('raw', {}))
-            for ev in payload if publisher_utils.verify_signature(
-                ev, cfg.CONF.publisher.telemetry_secret)
+            for ev in events if publisher_utils.verify_signature(
+                ev, self.conf.publisher.telemetry_secret)
         ]
         try:
             with self.publish_context as p:
                 p(events)
         except Exception:
-            if not cfg.CONF.notification.ack_on_event_error:
+            if not self.conf.notification.ack_on_event_error:
                 return oslo_messaging.NotificationResult.REQUEUE
             raise
         return oslo_messaging.NotificationResult.HANDLED
 
 
 class _PipelineTransportManager(object):
-    def __init__(self):
+    def __init__(self, conf):
+        self.conf = conf
         self.transporters = []
 
     @staticmethod
@@ -146,7 +151,7 @@ class _PipelineTransportManager(object):
     def add_transporter(self, transporter):
         self.transporters.append(transporter)
 
-    def publisher(self, context):
+    def publisher(self):
         serializer = self.serializer
         hash_grouping = self.hash_grouping
         transporters = self.transporters
@@ -168,7 +173,7 @@ class _PipelineTransportManager(object):
                                                      grouping_keys)
                                        % len(notifiers))
                                 notifier = notifiers[key]
-                                notifier.sample(context.to_dict(),
+                                notifier.sample({},
                                                 event_type=event_type,
                                                 payload=[serialized_data])
                 return p
@@ -183,28 +188,25 @@ class SamplePipelineTransportManager(_PipelineTransportManager):
     filter_attr = 'counter_name'
     event_type = 'ceilometer.pipeline'
 
-    @staticmethod
-    def serializer(data):
+    def serializer(self, data):
         return publisher_utils.meter_message_from_counter(
-            data, cfg.CONF.publisher.telemetry_secret)
+            data, self.conf.publisher.telemetry_secret)
 
 
 class EventPipelineTransportManager(_PipelineTransportManager):
     filter_attr = 'event_type'
     event_type = 'pipeline.event'
 
-    @staticmethod
-    def serializer(data):
+    def serializer(self, data):
         return publisher_utils.message_from_event(
-            data, cfg.CONF.publisher.telemetry_secret)
+            data, self.conf.publisher.telemetry_secret)
 
 
 class PublishContext(object):
 
-    def __init__(self, context, pipelines=None):
+    def __init__(self, pipelines=None):
         pipelines = pipelines or []
         self.pipelines = set(pipelines)
-        self.context = context
 
     def add_pipelines(self, pipelines):
         self.pipelines.update(pipelines)
@@ -212,12 +214,12 @@ class PublishContext(object):
     def __enter__(self):
         def p(data):
             for p in self.pipelines:
-                p.publish_data(self.context, data)
+                p.publish_data(data)
         return p
 
     def __exit__(self, exc_type, exc_value, traceback):
         for p in self.pipelines:
-            p.flush(self.context)
+            p.flush()
 
 
 class Source(object):
@@ -272,11 +274,11 @@ class Source(object):
     def is_supported(dataset, data_name):
         # Support wildcard like storage.* and !disk.*
         # Start with negation, we consider that the order is deny, allow
-        if any(utils.match(data_name, datapoint[1:])
+        if any(fnmatch.fnmatch(data_name, datapoint[1:])
                for datapoint in dataset if datapoint[0] == '!'):
             return False
 
-        if any(utils.match(data_name, datapoint)
+        if any(fnmatch.fnmatch(data_name, datapoint)
                for datapoint in dataset if datapoint[0] != '!'):
             return True
 
@@ -416,11 +418,11 @@ class EventSink(Sink):
 
     NAMESPACE = 'ceilometer.event.publisher'
 
-    def publish_events(self, ctxt, events):
+    def publish_events(self, events):
         if events:
             for p in self.publishers:
                 try:
-                    p.publish_events(ctxt, events)
+                    p.publish_events(events)
                 except Exception:
                     LOG.exception(_("Pipeline %(pipeline)s: %(status)s"
                                     " after error from publisher %(pub)s") %
@@ -430,19 +432,19 @@ class EventSink(Sink):
                     if not self.multi_publish:
                         raise
 
-    def flush(self, ctxt):
+    @staticmethod
+    def flush():
         """Flush data after all events have been injected to pipeline."""
-        pass
 
 
 class SampleSink(Sink):
 
     NAMESPACE = 'ceilometer.publisher'
 
-    def _transform_sample(self, start, ctxt, sample):
+    def _transform_sample(self, start, sample):
         try:
             for transformer in self.transformers[start:]:
-                sample = transformer.handle_sample(ctxt, sample)
+                sample = transformer.handle_sample(sample)
                 if not sample:
                     LOG.debug(
                         "Pipeline %(pipeline)s: Sample dropped by "
@@ -459,13 +461,12 @@ class SampleSink(Sink):
                                                        'smp': sample}))
             LOG.exception(err)
 
-    def _publish_samples(self, start, ctxt, samples):
+    def _publish_samples(self, start, samples):
         """Push samples into pipeline for publishing.
 
         :param start: The first transformer that the sample will be injected.
                       This is mainly for flush() invocation that transformer
                       may emit samples.
-        :param ctxt: Execution context from the manager or service.
         :param samples: Sample list.
 
         """
@@ -480,30 +481,30 @@ class SampleSink(Sink):
                     "%(smp)s from %(trans)s transformer", {'pipeline': self,
                                                            'smp': sample,
                                                            'trans': start})
-                sample = self._transform_sample(start, ctxt, sample)
+                sample = self._transform_sample(start, sample)
                 if sample:
                     transformed_samples.append(sample)
 
         if transformed_samples:
             for p in self.publishers:
                 try:
-                    p.publish_samples(ctxt, transformed_samples)
+                    p.publish_samples(transformed_samples)
                 except Exception:
                     LOG.exception(_(
                         "Pipeline %(pipeline)s: Continue after error "
                         "from publisher %(pub)s") % ({'pipeline': self,
                                                       'pub': p}))
 
-    def publish_samples(self, ctxt, samples):
-        self._publish_samples(0, ctxt, samples)
+    def publish_samples(self, samples):
+        self._publish_samples(0, samples)
 
-    def flush(self, ctxt):
+    def flush(self):
         """Flush data after all samples have been injected to pipeline."""
 
         for (i, transformer) in enumerate(self.transformers):
             try:
-                self._publish_samples(i + 1, ctxt,
-                                      list(transformer.flush(ctxt)))
+                self._publish_samples(i + 1,
+                                      list(transformer.flush()))
             except Exception as err:
                 LOG.warning(_(
                     "Pipeline %(pipeline)s: Error flushing "
@@ -516,7 +517,8 @@ class SampleSink(Sink):
 class Pipeline(object):
     """Represents a coupling between a sink and a corresponding source."""
 
-    def __init__(self, source, sink):
+    def __init__(self, conf, source, sink):
+        self.conf = conf
         self.source = source
         self.sink = sink
         self.name = str(self)
@@ -525,15 +527,15 @@ class Pipeline(object):
         return (self.source.name if self.source.name == self.sink.name
                 else '%s:%s' % (self.source.name, self.sink.name))
 
-    def flush(self, ctxt):
-        self.sink.flush(ctxt)
+    def flush(self):
+        self.sink.flush()
 
     @property
     def publishers(self):
         return self.sink.publishers
 
     @abc.abstractmethod
-    def publish_data(self, ctxt, data):
+    def publish_data(self, data):
         """Publish data from pipeline."""
 
 
@@ -548,12 +550,12 @@ class EventPipeline(Pipeline):
     def support_event(self, event_type):
         return self.source.support_event(event_type)
 
-    def publish_data(self, ctxt, events):
+    def publish_data(self, events):
         if not isinstance(events, list):
             events = [events]
         supported = [e for e in events
                      if self.source.support_event(e.event_type)]
-        self.sink.publish_events(ctxt, supported)
+        self.sink.publish_events(supported)
 
 
 class SamplePipeline(Pipeline):
@@ -602,12 +604,12 @@ class SamplePipeline(Pipeline):
                 return False
         return True
 
-    def publish_data(self, ctxt, samples):
+    def publish_data(self, samples):
         if not isinstance(samples, list):
             samples = [samples]
         supported = [s for s in samples if self.source.support_meter(s.name)
                      and self._validate_volume(s)]
-        self.sink.publish_samples(ctxt, supported)
+        self.sink.publish_samples(supported)
 
 
 SAMPLE_TYPE = {'pipeline': SamplePipeline,
@@ -619,7 +621,61 @@ EVENT_TYPE = {'pipeline': EventPipeline,
               'sink': EventSink}
 
 
-class PipelineManager(object):
+class ConfigManagerBase(object):
+    """Base class for managing configuration file refresh"""
+
+    def __init__(self, conf):
+        self.conf = conf
+        self.cfg_loc = None
+
+    def load_config(self, cfg_info):
+        """Load a configuration file and set its refresh values."""
+        if isinstance(cfg_info, dict):
+            conf = cfg_info
+        else:
+            if not os.path.exists(cfg_info):
+                cfg_info = self.conf.find_file(cfg_info)
+            with open(cfg_info) as fap:
+                data = fap.read()
+
+            conf = yaml.safe_load(data)
+            self.cfg_loc = cfg_info
+            self.cfg_mtime = self.get_cfg_mtime()
+            self.cfg_hash = self.get_cfg_hash()
+        LOG.info("Config file: %s", conf)
+        return conf
+
+    def get_cfg_mtime(self):
+        """Return modification time of cfg file"""
+        return os.path.getmtime(self.cfg_loc) if self.cfg_loc else None
+
+    def get_cfg_hash(self):
+        """Return hash of configuration file"""
+        if not self.cfg_loc:
+            return None
+
+        with open(self.cfg_loc) as fap:
+            data = fap.read()
+        if six.PY3:
+            data = data.encode('utf-8')
+
+        file_hash = hashlib.md5(data).hexdigest()
+        return file_hash
+
+    def cfg_changed(self):
+        """Returns hash of changed cfg else False."""
+        mtime = self.get_cfg_mtime()
+        if mtime > self.cfg_mtime:
+            LOG.info(_LI('Configuration file has been updated.'))
+            self.cfg_mtime = mtime
+            _hash = self.get_cfg_hash()
+            if _hash != self.cfg_hash:
+                LOG.info(_LI("Detected change in configuration."))
+                return _hash
+        return False
+
+
+class PipelineManager(ConfigManagerBase):
     """Pipeline Manager
 
     Pipeline manager sets up pipelines according to config file
@@ -628,7 +684,8 @@ class PipelineManager(object):
 
     """
 
-    def __init__(self, cfg, transformer_manager, p_type=SAMPLE_TYPE):
+    def __init__(self, conf, cfg_info, transformer_manager,
+                 p_type=SAMPLE_TYPE):
         """Setup the pipelines according to config.
 
         The configuration is supported as follows:
@@ -695,6 +752,8 @@ class PipelineManager(object):
         Publisher's name is plugin name in setup.cfg
 
         """
+        super(PipelineManager, self).__init__(conf)
+        cfg = self.load_config(cfg_info)
         self.pipelines = []
         if not ('sources' in cfg and 'sinks' in cfg):
             raise PipelineException("Both sources & sinks are required",
@@ -703,7 +762,7 @@ class PipelineManager(object):
 
         unique_names = set()
         sources = []
-        for s in cfg.get('sources', []):
+        for s in cfg.get('sources'):
             name = s.get('name')
             if name in unique_names:
                 raise PipelineException("Duplicated source names: %s" %
@@ -714,7 +773,7 @@ class PipelineManager(object):
         unique_names.clear()
 
         sinks = {}
-        for s in cfg.get('sinks', []):
+        for s in cfg.get('sinks'):
             name = s.get('name')
             if name in unique_names:
                 raise PipelineException("Duplicated sink names: %s" %
@@ -727,7 +786,7 @@ class PipelineManager(object):
         for source in sources:
             source.check_sinks(sinks)
             for target in source.sinks:
-                pipe = p_type['pipeline'](source, sinks[target])
+                pipe = p_type['pipeline'](self.conf, source, sinks[target])
                 if pipe.name in unique_names:
                     raise PipelineException(
                         "Duplicate pipeline name: %s. Ensure pipeline"
@@ -738,25 +797,27 @@ class PipelineManager(object):
                     self.pipelines.append(pipe)
         unique_names.clear()
 
-    def publisher(self, context):
+    def publisher(self):
         """Build a new Publisher for these manager pipelines.
 
         :param context: The context.
         """
-        return PublishContext(context, self.pipelines)
+        return PublishContext(self.pipelines)
 
 
-class PollingManager(object):
+class PollingManager(ConfigManagerBase):
     """Polling Manager
 
     Polling manager sets up polling according to config file.
     """
 
-    def __init__(self, cfg):
+    def __init__(self, conf, cfg_info):
         """Setup the polling according to config.
 
         The configuration is the sources half of the Pipeline Config.
         """
+        super(PollingManager, self).__init__(conf)
+        cfg = self.load_config(cfg_info)
         self.sources = []
         if not ('sources' in cfg and 'sinks' in cfg):
             raise PipelineException("Both sources & sinks are required",
@@ -764,7 +825,7 @@ class PollingManager(object):
         LOG.info(_LI('detected decoupled pipeline config format'))
 
         unique_names = set()
-        for s in cfg.get('sources', []):
+        for s in cfg.get('sources'):
             name = s.get('name')
             if name in unique_names:
                 raise PipelineException("Duplicated source names: %s" %
@@ -775,85 +836,26 @@ class PollingManager(object):
         unique_names.clear()
 
 
-def _setup_pipeline_manager(cfg_file, transformer_manager, p_type=SAMPLE_TYPE):
-    if not os.path.exists(cfg_file):
-        cfg_file = cfg.CONF.find_file(cfg_file)
-
-    LOG.debug("Pipeline config file: %s", cfg_file)
-
-    with open(cfg_file) as fap:
-        data = fap.read()
-
-    pipeline_cfg = yaml.safe_load(data)
-    LOG.info(_LI("Pipeline config: %s"), pipeline_cfg)
-
-    return PipelineManager(pipeline_cfg,
-                           transformer_manager or
-                           extension.ExtensionManager(
-                               'ceilometer.transformer',
-                           ), p_type)
-
-
-def _setup_polling_manager(cfg_file):
-    if not os.path.exists(cfg_file):
-        cfg_file = cfg.CONF.find_file(cfg_file)
-
-    LOG.debug("Polling config file: %s", cfg_file)
-
-    with open(cfg_file) as fap:
-        data = fap.read()
-
-    pipeline_cfg = yaml.safe_load(data)
-    LOG.info(_LI("Pipeline config: %s"), pipeline_cfg)
-
-    return PollingManager(pipeline_cfg)
-
-
-def setup_event_pipeline(transformer_manager=None):
+def setup_event_pipeline(conf, transformer_manager=None):
     """Setup event pipeline manager according to yaml config file."""
-    cfg_file = cfg.CONF.event_pipeline_cfg_file
-    return _setup_pipeline_manager(cfg_file, transformer_manager, EVENT_TYPE)
+    default = extension.ExtensionManager('ceilometer.transformer')
+    cfg_file = conf.event_pipeline_cfg_file
+    return PipelineManager(conf, cfg_file, transformer_manager or default,
+                           EVENT_TYPE)
 
 
-def setup_pipeline(transformer_manager=None):
+def setup_pipeline(conf, transformer_manager=None):
     """Setup pipeline manager according to yaml config file."""
-    cfg_file = cfg.CONF.pipeline_cfg_file
-    return _setup_pipeline_manager(cfg_file, transformer_manager)
+    default = extension.ExtensionManager('ceilometer.transformer')
+    cfg_file = conf.pipeline_cfg_file
+    return PipelineManager(conf, cfg_file, transformer_manager or default,
+                           SAMPLE_TYPE)
 
 
-def _get_pipeline_cfg_file(p_type=SAMPLE_TYPE):
-    if p_type == EVENT_TYPE:
-        cfg_file = cfg.CONF.event_pipeline_cfg_file
-    else:
-        cfg_file = cfg.CONF.pipeline_cfg_file
-
-    if not os.path.exists(cfg_file):
-        cfg_file = cfg.CONF.find_file(cfg_file)
-
-    return cfg_file
-
-
-def get_pipeline_mtime(p_type=SAMPLE_TYPE):
-    cfg_file = _get_pipeline_cfg_file(p_type)
-    return os.path.getmtime(cfg_file)
-
-
-def get_pipeline_hash(p_type=SAMPLE_TYPE):
-
-    cfg_file = _get_pipeline_cfg_file(p_type)
-    with open(cfg_file) as fap:
-        data = fap.read()
-    if six.PY3:
-        data = data.encode('utf-8')
-
-    file_hash = hashlib.md5(data).hexdigest()
-    return file_hash
-
-
-def setup_polling():
+def setup_polling(conf):
     """Setup polling manager according to yaml config file."""
-    cfg_file = cfg.CONF.pipeline_cfg_file
-    return _setup_polling_manager(cfg_file)
+    cfg_file = conf.pipeline_cfg_file
+    return PollingManager(conf, cfg_file)
 
 
 def get_pipeline_grouping_key(pipe):

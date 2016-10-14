@@ -22,10 +22,14 @@ from unittest import case
 import uuid
 
 from gabbi import fixture
+from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 from oslo_policy import opts
+from oslo_utils import fileutils
+import six
 from six.moves.urllib import parse as urlparse
 
+from ceilometer.api import app
 from ceilometer.event.storage import models
 from ceilometer.publisher import utils
 from ceilometer import sample
@@ -36,6 +40,17 @@ from ceilometer import storage
 # data store.
 ENGINES = ['mongodb']
 
+# NOTE(chdent): Hack to restore semblance of global configuration to
+# pass to the WSGI app used per test suite. LOAD_APP_KWARGS are the olso
+# configuration, and the pecan application configuration of
+# which the critical part is a reference to the current indexer.
+LOAD_APP_KWARGS = None
+
+
+def setup_app():
+    global LOAD_APP_KWARGS
+    return app.load_app(**LOAD_APP_KWARGS)
+
 
 class ConfigFixture(fixture.GabbiFixture):
     """Establish the relevant configuration for a test run."""
@@ -43,10 +58,13 @@ class ConfigFixture(fixture.GabbiFixture):
     def start_fixture(self):
         """Set up config."""
 
+        global LOAD_APP_KWARGS
+
         self.conf = None
 
         # Determine the database connection.
-        db_url = os.environ.get('CEILOMETER_TEST_STORAGE_URL')
+        db_url = os.environ.get('PIFPAF_URL', "sqlite://").replace(
+            "mysql://", "mysql+pymysql://")
         if not db_url:
             raise case.SkipTest('No database connection configured')
 
@@ -59,13 +77,24 @@ class ConfigFixture(fixture.GabbiFixture):
         self.conf([], project='ceilometer', validate_default_values=True)
         opts.set_defaults(self.conf)
         conf.import_group('api', 'ceilometer.api.controllers.v2.root')
-        conf.import_opt('store_events', 'ceilometer.notification',
-                        group='notification')
-        conf.set_override('policy_file',
-                          os.path.abspath('etc/ceilometer/policy.json'),
+
+        content = ('{"default": ""}')
+        if six.PY3:
+            content = content.encode('utf-8')
+        self.tempfile = fileutils.write_to_tempfile(content=content,
+                                                    prefix='policy',
+                                                    suffix='.json')
+
+        conf.set_override("policy_file", self.tempfile,
                           group='oslo_policy')
+        conf.set_override(
+            'api_paste_config',
+            os.path.abspath(
+                'ceilometer/tests/functional/gabbi/gabbi_paste.ini')
+        )
 
         # A special pipeline is required to use the direct publisher.
+        conf.import_opt('pipeline_cfg_file', 'ceilometer.pipeline')
         conf.set_override('pipeline_cfg_file',
                           'ceilometer/tests/functional/gabbi_pipeline.yaml')
 
@@ -74,11 +103,13 @@ class ConfigFixture(fixture.GabbiFixture):
         conf.set_override('metering_connection', '', group='database')
         conf.set_override('event_connection', '', group='database')
 
-        conf.set_override('pecan_debug', True, group='api')
         conf.set_override('gnocchi_is_enabled', False, group='api')
         conf.set_override('aodh_is_enabled', False, group='api')
+        conf.set_override('panko_is_enabled', False, group='api')
 
-        conf.set_override('store_events', True, group='notification')
+        LOAD_APP_KWARGS = {
+            'conf': conf,
+        }
 
     def stop_fixture(self):
         """Reset the config and remove data."""
@@ -148,3 +179,24 @@ class EventDataFixture(fixture.GabbiFixture):
     def stop_fixture(self):
         """Destroy the events."""
         self.conn.db.event.remove({'event_type': '/^cookies_/'})
+
+
+class CORSConfigFixture(fixture.GabbiFixture):
+    """Inject mock configuration for the CORS middleware."""
+
+    def start_fixture(self):
+        # Here we monkeypatch GroupAttr.__getattr__, necessary because the
+        # paste.ini method of initializing this middleware creates its own
+        # ConfigOpts instance, bypassing the regular config fixture.
+
+        def _mock_getattr(instance, key):
+            if key != 'allowed_origin':
+                return self._original_call_method(instance, key)
+            return "http://valid.example.com"
+
+        self._original_call_method = cfg.ConfigOpts.GroupAttr.__getattr__
+        cfg.ConfigOpts.GroupAttr.__getattr__ = _mock_getattr
+
+    def stop_fixture(self):
+        """Remove the monkeypatch."""
+        cfg.ConfigOpts.GroupAttr.__getattr__ = self._original_call_method

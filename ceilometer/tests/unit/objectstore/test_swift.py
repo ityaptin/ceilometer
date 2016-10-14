@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Copyright 2012 eNovance <licensing@enovance.com>
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,8 +14,9 @@
 
 import collections
 
-from keystoneclient import exceptions
+from keystoneauth1 import exceptions
 import mock
+from oslo_config import fixture as fixture_config
 from oslotest import base
 from oslotest import mockpatch
 from swiftclient import client as swift_client
@@ -65,8 +64,8 @@ ASSIGNED_TENANTS = [Tenant('tenant-000'), Tenant('tenant-001')]
 
 class TestManager(manager.AgentManager):
 
-    def __init__(self):
-        super(TestManager, self).__init__()
+    def __init__(self, worker_id, conf):
+        super(TestManager, self).__init__(worker_id, conf)
         self._keystone = mock.MagicMock()
         self._keystone_last_exception = None
         self._service_catalog = (self._keystone.session.auth.
@@ -106,8 +105,9 @@ class TestSwiftPollster(testscenarios.testcase.WithScenarios,
     @mock.patch('ceilometer.pipeline.setup_pipeline', mock.MagicMock())
     def setUp(self):
         super(TestSwiftPollster, self).setUp()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
         self.pollster = self.factory()
-        self.manager = TestManager()
+        self.manager = TestManager(0, self.CONF)
 
         if self.pollster.CACHE_KEY_METHOD == 'swift.head_account':
             self.ACCOUNTS = HEAD_ACCOUNTS

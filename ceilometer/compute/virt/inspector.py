@@ -58,6 +58,13 @@ CPUStats = collections.namedtuple('CPUStats', ['number', 'time'])
 #
 CPUUtilStats = collections.namedtuple('CPUUtilStats', ['util'])
 
+# Named tuple representing CPU L3 cache usage statistics.
+#
+# cachesize: Amount of CPU L3 cache used
+#
+CPUL3CacheUsageStats = collections.namedtuple('CPUL3CacheUsageStats',
+                                              ['l3_cache_usage'])
+
 # Named tuple representing Memory usage statistics.
 #
 # usage: Amount of memory used
@@ -71,6 +78,27 @@ MemoryUsageStats = collections.namedtuple('MemoryUsageStats', ['usage'])
 #
 MemoryResidentStats = collections.namedtuple('MemoryResidentStats',
                                              ['resident'])
+
+
+# Named tuple representing memory bandwidth statistics.
+#
+# total: total system bandwidth from one level of cache
+# local: bandwidth of memory traffic for a memory controller
+#
+MemoryBandwidthStats = collections.namedtuple('MemoryBandwidthStats',
+                                              ['total', 'local'])
+
+
+# Named tuple representing perf events statistics.
+#
+# cpu_cycles: the number of cpu cycles one instruction needs
+# instructions: the count of instructions
+# cache_references: the count of cache hits
+# cache_misses: the count of caches misses
+#
+PerfEventsStats = collections.namedtuple('PerfEventsStats',
+                                         ['cpu_cycles', 'instructions',
+                                          'cache_references', 'cache_misses'])
 
 
 # Named tuple representing vNICs.
@@ -92,8 +120,10 @@ Interface = collections.namedtuple('Interface', ['name', 'mac',
 # tx_packets: number of transmitted packets
 #
 InterfaceStats = collections.namedtuple('InterfaceStats',
-                                        ['rx_bytes', 'rx_packets',
-                                         'tx_bytes', 'tx_packets'])
+                                        ['rx_bytes', 'tx_bytes',
+                                         'rx_packets', 'tx_packets',
+                                         'rx_drop', 'tx_drop',
+                                         'rx_errors', 'tx_errors'])
 
 
 # Named tuple representing vNIC rate statistics.
@@ -180,6 +210,10 @@ class InstanceShutOffException(InspectorException):
     pass
 
 
+class InstanceNoDataException(InspectorException):
+    pass
+
+
 class NoDataException(InspectorException):
     pass
 
@@ -215,6 +249,14 @@ class Inspector(object):
         :param duration: the last 'n' seconds, over which the value should be
                inspected
         :return: the percentage of CPU utilization
+        """
+        raise ceilometer.NotImplementedError
+
+    def inspect_cpu_l3_cache(self, instance):
+        """Inspect the CPU L3 cache usage for an instance.
+
+        :param instance: the target instance
+        :return: the amount of cpu l3 cache used
         """
         raise ceilometer.NotImplementedError
 
@@ -267,6 +309,16 @@ class Inspector(object):
         """
         raise ceilometer.NotImplementedError
 
+    def inspect_memory_bandwidth(self, instance, duration=None):
+        """Inspect the memory bandwidth statistics for an instance.
+
+        :param instance: the target instance
+        :param duration: the last 'n' seconds, over which the value should be
+               inspected
+        :return:
+        """
+        raise ceilometer.NotImplementedError
+
     def inspect_disk_rates(self, instance, duration=None):
         """Inspect the disk statistics as rates for an instance.
 
@@ -298,7 +350,17 @@ class Inspector(object):
         """Inspect the disk information for an instance.
 
         :param instance: the target instance
-        :return: for each disk , capacity , alloaction and usage
+        :return: for each disk , capacity , allocation and usage
+        """
+        raise ceilometer.NotImplementedError
+
+    def inspect_perf_events(self, instance, duration=None):
+        """Inspect the perf events statistics for an instance.
+
+        :param instance: the target instance
+        :param duration: the last 'n' seconds, over which the value should be
+               inspected
+        :return:
         """
         raise ceilometer.NotImplementedError
 

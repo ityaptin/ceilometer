@@ -40,10 +40,8 @@ class BaseConversionTransformer(transformer.TransformerBase):
                        unit and scaling factor (a missing value
                        connotes no change)
         """
-        source = source or {}
-        target = target or {}
-        self.source = source
-        self.target = target
+        self.source = source or {}
+        self.target = target or {}
         super(BaseConversionTransformer, self).__init__(**kwargs)
 
     def _map(self, s, attr):
@@ -72,7 +70,7 @@ class DeltaTransformer(BaseConversionTransformer):
         self.growth_only = growth_only
         self.cache = {}
 
-    def handle_sample(self, context, s):
+    def handle_sample(self, s):
         """Handle a sample, converting if necessary."""
         key = s.name + s.resource_id
         prev = self.cache.get(key)
@@ -159,7 +157,7 @@ class ScalingTransformer(BaseConversionTransformer):
             resource_metadata=s.resource_metadata
         )
 
-    def handle_sample(self, context, s):
+    def handle_sample(self, s):
         """Handle a sample, converting if necessary."""
         LOG.debug('handling sample %s', s)
         if self.source.get('unit', s.unit) == s.unit:
@@ -171,7 +169,7 @@ class ScalingTransformer(BaseConversionTransformer):
 class RateOfChangeTransformer(ScalingTransformer):
     """Transformer based on the rate of change of a sample volume.
 
-    For example taking the current and previous volumes of a cumulative sample
+    For example, taking the current and previous volumes of a cumulative sample
     and producing a gauge value based on the proportion of some maximum used.
     """
 
@@ -181,7 +179,7 @@ class RateOfChangeTransformer(ScalingTransformer):
         self.cache = {}
         self.scale = self.scale or '1'
 
-    def handle_sample(self, context, s):
+    def handle_sample(self, s):
         """Handle a sample, converting if necessary."""
         LOG.debug('handling sample %s', s)
         key = s.name + s.resource_id
@@ -195,7 +193,7 @@ class RateOfChangeTransformer(ScalingTransformer):
             time_delta = timeutils.delta_seconds(prev_timestamp, timestamp)
             # disallow violations of the arrow of time
             if time_delta < 0:
-                LOG.warn(_('dropping out of time order sample: %s'), (s,))
+                LOG.warning(_('dropping out of time order sample: %s'), (s,))
                 # Reset the cache to the newer sample.
                 self.cache[key] = prev
                 return None
@@ -213,8 +211,8 @@ class RateOfChangeTransformer(ScalingTransformer):
             s = self._convert(s, rate_of_change)
             LOG.debug('converted to: %s', s)
         else:
-            LOG.warn(_('dropping sample with no predecessor: %s'),
-                     (s,))
+            LOG.warning(_('dropping sample with no predecessor: %s'),
+                        (s,))
             s = None
         return s
 
@@ -236,16 +234,30 @@ class AggregatorTransformer(ScalingTransformer):
 
         AggregatorTransformer(size=15, user_id='first',
                               resource_metadata='drop')
+
+      To keep the timestamp of the last received sample rather
+      than the first:
+
+        AggregatorTransformer(timestamp="last")
+
     """
 
     def __init__(self, size=1, retention_time=None,
                  project_id=None, user_id=None, resource_metadata="last",
-                 **kwargs):
+                 timestamp="first", **kwargs):
         super(AggregatorTransformer, self).__init__(**kwargs)
         self.samples = {}
         self.counts = collections.defaultdict(int)
         self.size = int(size) if size else None
         self.retention_time = float(retention_time) if retention_time else None
+        if not (self.size or self.retention_time):
+            self.size = 1
+
+        if timestamp in ["first", "last"]:
+            self.timestamp = timestamp
+        else:
+            self.timestamp = "first"
+
         self.initial_timestamp = None
         self.aggregated_samples = 0
 
@@ -262,7 +274,7 @@ class AggregatorTransformer(ScalingTransformer):
         drop = ['drop'] if is_droppable else []
         if value or mandatory:
             if value not in ['last', 'first'] + drop:
-                LOG.warn('%s is unknown (%s), using last' % (name, value))
+                LOG.warning('%s is unknown (%s), using last' % (name, value))
                 value = 'last'
             self.merged_attribute_policy[name] = value
         else:
@@ -279,7 +291,7 @@ class AggregatorTransformer(ScalingTransformer):
         # NOTE(sileht): it assumes, a meter always have the same unit/type
         return "%s-%s-%s" % (s.name, s.resource_id, non_aggregated_keys)
 
-    def handle_sample(self, context, sample_):
+    def handle_sample(self, sample_):
         if not self.initial_timestamp:
             self.initial_timestamp = timeutils.parse_isotime(sample_.timestamp)
 
@@ -292,6 +304,8 @@ class AggregatorTransformer(ScalingTransformer):
                     'resource_metadata'] == 'drop':
                 self.samples[key].resource_metadata = {}
         else:
+            if self.timestamp == "last":
+                self.samples[key].timestamp = sample_.timestamp
             if sample_.type == sample.TYPE_CUMULATIVE:
                 self.samples[key].volume = self._scale(sample_)
             else:
@@ -301,14 +315,14 @@ class AggregatorTransformer(ScalingTransformer):
                     setattr(self.samples[key], field,
                             getattr(sample_, field))
 
-    def flush(self, context):
+    def flush(self):
         if not self.initial_timestamp:
             return []
 
         expired = (self.retention_time and
                    timeutils.is_older_than(self.initial_timestamp,
                                            self.retention_time))
-        full = self.aggregated_samples >= self.size
+        full = self.size and self.aggregated_samples >= self.size
         if full or expired:
             x = list(self.samples.values())
             # gauge aggregates need to be averages

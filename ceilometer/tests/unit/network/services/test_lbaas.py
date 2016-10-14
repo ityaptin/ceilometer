@@ -14,7 +14,8 @@
 # under the License.
 
 import mock
-from oslo_context import context
+
+from oslo_config import fixture as fixture_config
 from oslotest import base
 from oslotest import mockpatch
 
@@ -30,8 +31,11 @@ class _BaseTestLBPollster(base.BaseTestCase):
     def setUp(self):
         super(_BaseTestLBPollster, self).setUp()
         self.addCleanup(mock.patch.stopall)
-        self.context = context.get_admin_context()
-        self.manager = manager.AgentManager()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
+        self.manager = manager.AgentManager(0, self.CONF)
+        self.CONF.set_override('neutron_lbaas_version',
+                               'v1',
+                               group='service_types')
         plugin_base._get_keystone = mock.Mock()
         catalog = (plugin_base._get_keystone.session.auth.get_access.
                    return_value.service_catalog)
@@ -132,7 +136,7 @@ class TestLBPoolPollster(_BaseTestLBPollster):
         samples = list(self.pollster.get_samples(
             self.manager, {},
             resources=self.fake_get_pools()))
-        self.assertEqual(3, len(samples))
+        self.assertEqual(4, len(samples))
         for field in self.pollster.FIELDS:
             self.assertEqual(self.fake_get_pools()[0][field],
                              samples[0].resource_metadata[field])
@@ -255,7 +259,7 @@ class TestLBVipPollster(_BaseTestLBPollster):
         samples = list(self.pollster.get_samples(
             self.manager, {},
             resources=self.fake_get_vips()))
-        self.assertEqual(3, len(samples))
+        self.assertEqual(4, len(samples))
         for field in self.pollster.FIELDS:
             self.assertEqual(self.fake_get_vips()[0][field],
                              samples[0].resource_metadata[field])
@@ -348,7 +352,7 @@ class TestLBMemberPollster(_BaseTestLBPollster):
         samples = list(self.pollster.get_samples(
             self.manager, {},
             self.fake_get_members()))
-        self.assertEqual(3, len(samples))
+        self.assertEqual(4, len(samples))
         for field in self.pollster.FIELDS:
             self.assertEqual(self.fake_get_members()[0][field],
                              samples[0].resource_metadata[field])
@@ -469,7 +473,6 @@ class TestLBStatsPollster(_BaseTestLBPollster):
     def _check_get_samples(self, factory, sample_name, expected_volume,
                            expected_type):
         pollster = factory()
-
         cache = {}
         samples = list(pollster.get_samples(self.manager, cache,
                                             self.fake_get_pools()))
@@ -496,9 +499,9 @@ class TestLBStatsPollster(_BaseTestLBPollster):
     def test_lb_incoming_bytes(self):
         self._check_get_samples(lbaas.LBBytesInPollster,
                                 'network.services.lb.incoming.bytes',
-                                1, 'cumulative')
+                                1, 'gauge')
 
     def test_lb_outgoing_bytes(self):
         self._check_get_samples(lbaas.LBBytesOutPollster,
                                 'network.services.lb.outgoing.bytes',
-                                3, 'cumulative')
+                                3, 'gauge')

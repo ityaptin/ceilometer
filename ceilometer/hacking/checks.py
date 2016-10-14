@@ -1,4 +1,5 @@
-# Copyright 2015 Huawei Technologies Co., Ltd.
+# Copyright (c) 2016 OpenStack Foundation
+# All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -17,31 +18,40 @@ Guidelines for writing new hacking checks
 
  - Use only for Ceilometer specific tests. OpenStack general tests
    should be submitted to the common 'hacking' module.
- - Pick numbers in the range C3xx. Find the current test with
+ - Pick numbers in the range X3xx. Find the current test with
    the highest allocated number and then pick the next value.
  - Keep the test method code in the source file ordered based
    on the C3xx value.
  - List the new rule in the top level HACKING.rst file
- - Add test cases for each new rule to ceilometer/tests/test_hacking.py
 
 """
 
-import re
+
+def no_log_warn(logical_line):
+    """Disallow 'LOG.warn('
+
+    https://bugs.launchpad.net/tempest/+bug/1508442
+
+    C301
+    """
+    if logical_line.startswith('LOG.warn('):
+        yield(0, 'C301 Use LOG.warning() rather than LOG.warn()')
 
 
-# TODO(zqfan): When other oslo libraries switch over non-namespace'd
-# imports, we need to add them to the regexp below.
-oslo_namespace_imports = re.compile(
-    r"(from|import) oslo[.](concurrency|config|utils|i18n|serialization)")
+def no_os_popen(logical_line):
+    """Disallow 'os.popen('
 
+    Deprecated library function os.popen() Replace it using subprocess
+    https://bugs.launchpad.net/tempest/+bug/1529836
 
-def check_oslo_namespace_imports(logical_line, physical_line, filename):
-    if re.match(oslo_namespace_imports, logical_line):
-        msg = ("C300: '%s' must be used instead of '%s'." % (
-               logical_line.replace('oslo.', 'oslo_'),
-               logical_line))
-        yield(0, msg)
+    C302
+    """
+
+    if 'os.popen(' in logical_line:
+        yield(0, 'C302 Deprecated library function os.popen(). '
+                 'Replace it using subprocess module. ')
 
 
 def factory(register):
-    register(check_oslo_namespace_imports)
+    register(no_log_warn)
+    register(no_os_popen)

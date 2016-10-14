@@ -16,7 +16,6 @@ import abc
 
 from oslo_config import cfg
 from oslo_log import log
-from oslo_utils import timeutils
 import six
 
 from ceilometer.agent import plugin_base
@@ -63,11 +62,10 @@ class _Base(plugin_base.PollsterBase):
             stats = self.read_data(cache)
         except nmexcept.IPMIException:
             self.polling_failures += 1
-            LOG.warning(_('Polling %(name)s faild for %(cnt)s times!')
+            LOG.warning(_('Polling %(name)s failed for %(cnt)s times!')
                         % ({'name': self.NAME,
                             'cnt': self.polling_failures}))
-            if (CONF.ipmi.polling_retry >= 0 and
-                    self.polling_failures > CONF.ipmi.polling_retry):
+            if 0 <= CONF.ipmi.polling_retry < self.polling_failures:
                 LOG.warning(_('Pollster for %s is disabled!') % self.NAME)
                 raise plugin_base.PollsterPermanentError(resources)
             else:
@@ -90,7 +88,6 @@ class _Base(plugin_base.PollsterBase):
                 user_id=None,
                 project_id=None,
                 resource_id=CONF.host,
-                timestamp=timeutils.utcnow().isoformat(),
                 resource_metadata=metadata)
 
 

@@ -10,8 +10,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-""" Various HBase helpers
-"""
+"""Various HBase helpers"""
 import copy
 import datetime
 import json
@@ -297,7 +296,7 @@ def make_meter_query_for_resource(start_timestamp, start_timestamp_op,
     if mq:
         meter_q = " AND ".join(mq)
         # If there is a filtering on time_range we need to point that
-        # qualifiers should start with m_. Overwise in case e.g.
+        # qualifiers should start with m_. Otherwise in case e.g.
         # QualifierFilter (>=, 'binaryprefix:m_9222030811134775808')
         # qualifier 's_test' satisfies the filter and will be returned.
         meter_q = _QualifierFilter("=", '') + " AND " + meter_q
@@ -315,7 +314,7 @@ def make_general_rowkey_scan(rts_start=None, rts_end=None, some_id=None):
     if not rts_start:
         # NOTE(idegtiarov): Here we could not use chr > 122 because chr >= 123
         # will be quoted and character will be turn in a composition that is
-        # started with '%' (chr(37)) that lexicographically is less then chr
+        # started with '%' (chr(37)) that lexicographically is less than chr
         # of number
         rts_start = chr(122)
     end_row = prepare_key(some_id, rts_start)
@@ -385,7 +384,7 @@ def deserialize_entry(entry, get_raw_meta=True):
     else:
         metadata = metadata_flattened
 
-    return flatten_result, sources, meters, metadata
+    return flatten_result, meters, metadata
 
 
 def serialize_entry(data=None, **kwargs):
@@ -471,9 +470,9 @@ def create_tables(conn, tables, column_families):
                               separator=conn.table_prefix_separator,
                               table_name=table))
 
-            LOG.warn(_("Cannot create table %(table_name)s   "
-                       "it already exists. Ignoring error")
-                     % {'table_name': table})
+            LOG.warning(_("Cannot create table %(table_name)s   "
+                        "it already exists. Ignoring error")
+                        % {'table_name': table})
 
 
 def quote(s, *args):

@@ -12,11 +12,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import datetime
-
-from keystoneclient import exceptions
+from keystoneauth1 import exceptions
 import mock
-from oslo_context import context
+from oslo_config import fixture as fixture_config
 from oslotest import base
 from oslotest import mockpatch
 import six
@@ -50,8 +48,8 @@ ENDPOINT = 'end://point'
 
 class TestManager(manager.AgentManager):
 
-    def __init__(self):
-        super(TestManager, self).__init__()
+    def __init__(self, worker_id, conf):
+        super(TestManager, self).__init__(worker_id, conf)
         self._keystone = mock.Mock()
 
 
@@ -60,8 +58,8 @@ class _BaseTestCase(base.BaseTestCase):
     @mock.patch('ceilometer.pipeline.setup_pipeline', mock.MagicMock())
     def setUp(self):
         super(_BaseTestCase, self).setUp()
-        self.context = context.get_admin_context()
-        self.manager = TestManager()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
+        self.manager = TestManager(0, self.CONF)
 
 
 class TestKwapi(_BaseTestCase):
@@ -109,10 +107,6 @@ class TestEnergyPollster(_BaseTestCase):
         samples_by_name = dict((s.resource_id, s) for s in samples)
         for name, probe in PROBE_DICT['probes'].items():
             sample = samples_by_name[name]
-            expected = datetime.datetime.fromtimestamp(
-                probe['timestamp']
-            ).isoformat()
-            self.assertEqual(expected, sample.timestamp)
             self.assertEqual(probe[self.unit], sample.volume)
 
 

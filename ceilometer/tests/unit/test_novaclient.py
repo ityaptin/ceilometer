@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Copyright 2013-2014 eNovance <licensing@enovance.com>
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,6 +12,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import glanceclient
 import mock
 import novaclient
 from oslo_config import fixture as fixture_config
@@ -27,16 +26,16 @@ class TestNovaClient(base.BaseTestCase):
 
     def setUp(self):
         super(TestNovaClient, self).setUp()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
         self._flavors_count = 0
         self._images_count = 0
-        self.nv = nova_client.Client()
+        self.nv = nova_client.Client(self.CONF)
         self.useFixture(mockpatch.PatchObject(
             self.nv.nova_client.flavors, 'get',
             side_effect=self.fake_flavors_get))
         self.useFixture(mockpatch.PatchObject(
-            self.nv.nova_client.images, 'get',
+            self.nv.glance_client.images, 'get',
             side_effect=self.fake_images_get))
-        self.CONF = self.useFixture(fixture_config.Config()).conf
 
     def fake_flavors_get(self, *args, **kwargs):
         self._flavors_count += 1
@@ -67,7 +66,7 @@ class TestNovaClient(base.BaseTestCase):
             a.name = image_details[a.id][0]
             a.metadata = image_details[a.id][1]
         else:
-            raise novaclient.exceptions.NotFound('foobar')
+            raise glanceclient.exc.HTTPNotFound('foobar')
 
         return a
 
@@ -246,5 +245,5 @@ class TestNovaClient(base.BaseTestCase):
 
     def test_with_nova_http_log_debug(self):
         self.CONF.set_override("nova_http_log_debug", True)
-        self.nv = nova_client.Client()
+        self.nv = nova_client.Client(self.CONF)
         self.assertIsNotNone(self.nv.nova_client.client.logger)

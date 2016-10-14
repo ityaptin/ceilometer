@@ -18,12 +18,12 @@
 import abc
 import collections
 
-from oslo_context import context
 from oslo_log import log
 import oslo_messaging
 import six
 from stevedore import extension
 
+from ceilometer.i18n import _LE
 from ceilometer import messaging
 
 LOG = log.getLogger(__name__)
@@ -77,48 +77,56 @@ class NotificationBase(PluginBase):
         :param message: Message to process.
         """
 
-    def info(self, ctxt, publisher_id, event_type, payload, metadata):
+    @staticmethod
+    def _consume_and_drop(notifications):
+        """RPC endpoint for useless notification level"""
+        # NOTE(sileht): nothing special todo here, but because we listen
+        # for the generic notification exchange we have to consume all its
+        # queues
+
+    audit = _consume_and_drop
+    debug = _consume_and_drop
+    warn = _consume_and_drop
+    error = _consume_and_drop
+    critical = _consume_and_drop
+
+    def info(self, notifications):
         """RPC endpoint for notification messages at info level
 
         When another service sends a notification over the message
         bus, this method receives it.
 
-        :param ctxt: oslo.messaging context
-        :param publisher_id: publisher of the notification
-        :param event_type: type of notification
-        :param payload: notification payload
-        :param metadata: metadata about the notification
-
+        :param notifications: list of notifications
         """
-        notification = messaging.convert_to_old_notification_format(
-            'info', ctxt, publisher_id, event_type, payload, metadata)
-        self.to_samples_and_publish(context.get_admin_context(), notification)
+        self._process_notifications('info', notifications)
 
-    def sample(self, ctxt, publisher_id, event_type, payload, metadata):
+    def sample(self, notifications):
         """RPC endpoint for notification messages at sample level
 
         When another service sends a notification over the message
         bus at sample priority, this method receives it.
 
-        :param ctxt: oslo.messaging context
-        :param publisher_id: publisher of the notification
-        :param event_type: type of notification
-        :param payload: notification payload
-        :param metadata: metadata about the notification
-
+        :param notifications: list of notifications
         """
-        notification = messaging.convert_to_old_notification_format(
-            'sample', ctxt, publisher_id, event_type, payload, metadata)
-        self.to_samples_and_publish(context.get_admin_context(), notification)
+        self._process_notifications('sample', notifications)
 
-    def to_samples_and_publish(self, context, notification):
+    def _process_notifications(self, priority, notifications):
+        for notification in notifications:
+            try:
+                notification = messaging.convert_to_old_notification_format(
+                    priority, notification)
+                self.to_samples_and_publish(notification)
+            except Exception:
+                LOG.error(_LE('Fail to process notification'), exc_info=True)
+
+    def to_samples_and_publish(self, notification):
         """Return samples produced by *process_notification*.
 
         Samples produced for the given notification.
         :param context: Execution context from the service or RPC call
         :param notification: The notification to process.
         """
-        with self.manager.publisher(context) as p:
+        with self.manager.publisher() as p:
             p(list(self.process_notification(notification)))
 
 

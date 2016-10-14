@@ -14,7 +14,6 @@
 # under the License.
 
 from oslo_log import log
-from oslo_utils import timeutils
 
 from ceilometer.i18n import _
 from ceilometer.network.services import base
@@ -46,9 +45,9 @@ class VPNServicesPollster(base.BaseServicesPollster):
             status = self.get_status_id(vpn['status'])
             if status == -1:
                 # unknown status, skip this sample
-                LOG.warn(_("Unknown status %(stat)s received on vpn %(id)s,"
-                           "skipping sample") % {'stat': vpn['status'],
-                                                 'id': vpn['id']})
+                LOG.warning(_("Unknown status %(stat)s received on vpn "
+                              "%(id)s, skipping sample")
+                            % {'stat': vpn['status'], 'id': vpn['id']})
                 continue
 
             yield sample.Sample(
@@ -59,7 +58,6 @@ class VPNServicesPollster(base.BaseServicesPollster):
                 user_id=None,
                 project_id=vpn['tenant_id'],
                 resource_id=vpn['id'],
-                timestamp=timeutils.utcnow().isoformat(),
                 resource_metadata=self.extract_metadata(vpn)
             )
 
@@ -80,6 +78,7 @@ class IPSecConnectionsPollster(base.BaseServicesPollster):
               'vpnservice_id',
               'mtu',
               'admin_state_up',
+              'status',
               'tenant_id'
               ]
 
@@ -101,6 +100,5 @@ class IPSecConnectionsPollster(base.BaseServicesPollster):
                 user_id=None,
                 project_id=conn['tenant_id'],
                 resource_id=conn['id'],
-                timestamp=timeutils.utcnow().isoformat(),
                 resource_metadata=self.extract_metadata(conn)
             )

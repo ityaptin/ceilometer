@@ -127,14 +127,35 @@ class TestUDPPublisher(base.BaseTestCase):
         self._check_udp_socket('udp://[::1]:4952',
                                socket.AF_INET6)
 
+    def test_publisher_udp_socket_ipv4_hostname(self):
+        host = "ipv4.google.com"
+        try:
+            socket.getaddrinfo(host, None,
+                               socket.AF_INET,
+                               socket.SOCK_DGRAM)
+        except socket.gaierror:
+            self.skipTest("cannot resolve not running test")
+        url = "udp://"+host+":4952"
+        self._check_udp_socket(url, socket.AF_INET)
+
+    def test_publisher_udp_socket_ipv6_hostname(self):
+        host = "ipv6.google.com"
+        try:
+            socket.getaddrinfo(host, None,
+                               socket.AF_INET6,
+                               socket.SOCK_DGRAM)
+        except socket.gaierror:
+            self.skipTest("cannot resolve not running test")
+        url = "udp://"+host+":4952"
+        self._check_udp_socket(url, socket.AF_INET6)
+
     def test_published(self):
         self.data_sent = []
         with mock.patch('socket.socket',
                         self._make_fake_socket(self.data_sent)):
             publisher = udp.UDPPublisher(
                 netutils.urlsplit('udp://somehost'))
-        publisher.publish_samples(None,
-                                  self.test_data)
+        publisher.publish_samples(self.test_data)
 
         self.assertEqual(5, len(self.data_sent))
 
@@ -172,5 +193,4 @@ class TestUDPPublisher(base.BaseTestCase):
                         self._make_broken_socket):
             publisher = udp.UDPPublisher(
                 netutils.urlsplit('udp://localhost'))
-        publisher.publish_samples(None,
-                                  self.test_data)
+        publisher.publish_samples(self.test_data)

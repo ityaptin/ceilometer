@@ -157,8 +157,12 @@ def make_query_from_filter(session, query, sample_filter, require_meter=True):
         else:
             query = query.filter(models.Sample.timestamp < ts_end)
     if sample_filter.user:
+        if sample_filter.user == 'None':
+            sample_filter.user = None
         query = query.filter(models.Resource.user_id == sample_filter.user)
     if sample_filter.project:
+        if sample_filter.project == 'None':
+            sample_filter.project = None
         query = query.filter(
             models.Resource.project_id == sample_filter.project)
     if sample_filter.resource:
@@ -233,7 +237,20 @@ class Connection(base.Connection):
         from oslo_db.sqlalchemy import migration
         path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                             'sqlalchemy', 'migrate_repo')
-        migration.db_sync(self._engine_facade.get_engine(), path)
+        engine = self._engine_facade.get_engine()
+
+        from migrate import exceptions as migrate_exc
+        from migrate.versioning import api
+        from migrate.versioning import repository
+
+        repo = repository.Repository(path)
+        try:
+            api.db_version(engine, repo)
+        except migrate_exc.DatabaseNotControlledError:
+            models.Base.metadata.create_all(engine)
+            api.version_control(engine, repo, repo.latest)
+        else:
+            migration.db_sync(engine, path)
 
     def clear(self):
         engine = self._engine_facade.get_engine()
@@ -307,8 +324,9 @@ class Connection(base.Connection):
                                     {'id': internal_id, 'meta_key': key,
                                      'value': v})
                             except KeyError:
-                                LOG.warn(_("Unknown metadata type. Key (%s) "
-                                         "will not be queryable."), key)
+                                LOG.warning(_("Unknown metadata type. Key "
+                                              "(%s) will not be queryable."),
+                                            key)
                         for _model in meta_map.keys():
                             conn.execute(_model.__table__.insert(),
                                          meta_map[_model])
@@ -320,14 +338,17 @@ class Connection(base.Connection):
 
         return internal_id
 
-    @api.wrap_db_retry(retry_interval=cfg.CONF.database.retry_interval,
-                       max_retries=cfg.CONF.database.max_retries,
+    # FIXME(sileht): use set_defaults to pass cfg.CONF.database.retry_interval
+    # and cfg.CONF.database.max_retries to this method when global config
+    # have been removed (puting directly cfg.CONF don't work because and copy
+    # the default instead of the configured value)
+    @api.wrap_db_retry(retry_interval=10, max_retries=10,
                        retry_on_deadlock=True)
     def record_metering_data(self, data):
         """Write the data to the backend storage system.
 
         :param data: a dictionary such as returned by
-                     ceilometer.meter.meter_message_from_counter
+                     ceilometer.publisher.utils.meter_message_from_counter
         """
         engine = self._engine_facade.get_engine()
         with engine.begin() as conn:
@@ -366,7 +387,7 @@ class Connection(base.Connection):
             rows = sample_q.delete()
             LOG.info(_LI("%d samples removed from database"), rows)
 
-        if not cfg.CONF.sql_expire_samples_only:
+        if not cfg.CONF.database.sql_expire_samples_only:
             with session.begin():
                 # remove Meter definitions with no matching samples
                 (session.query(models.Meter)
@@ -438,7 +459,7 @@ class Connection(base.Connection):
         # NOTE: When sql_expire_samples_only is enabled, there will be some
         #       resources without any sample, in such case we should use inner
         #       join on sample table to avoid wrong result.
-        if cfg.CONF.sql_expire_samples_only or has_timestamp:
+        if cfg.CONF.database.sql_expire_samples_only or has_timestamp:
             res_q = session.query(distinct(models.Resource.resource_id)).join(
                 models.Sample,
                 models.Sample.resource_id == models.Resource.internal_id)
@@ -493,7 +514,7 @@ class Connection(base.Connection):
             )
 
     def get_meters(self, user=None, project=None, resource=None, source=None,
-                   metaquery=None, limit=None):
+                   metaquery=None, limit=None, unique=False):
         """Return an iterable of api_models.Meter instances
 
         :param user: Optional ID for user that owns the resource.
@@ -502,6 +523,7 @@ class Connection(base.Connection):
         :param source: Optional source filter.
         :param metaquery: Optional dict with metadata to match on.
         :param limit: Maximum number of results to return.
+        :param unique: If set to true, return only unique meter information.
         """
         if limit == 0:
             return
@@ -514,10 +536,17 @@ class Connection(base.Connection):
         # NOTE(gordc): get latest sample of each meter/resource. we do not
         #              filter here as we want to filter only on latest record.
         session = self._engine_facade.get_session()
+
         subq = session.query(func.max(models.Sample.id).label('id')).join(
             models.Resource,
-            models.Resource.internal_id == models.Sample.resource_id).group_by(
-            models.Sample.meter_id, models.Resource.resource_id)
+            models.Resource.internal_id == models.Sample.resource_id)
+
+        if unique:
+            subq = subq.group_by(models.Sample.meter_id)
+        else:
+            subq = subq.group_by(models.Sample.meter_id,
+                                 models.Resource.resource_id)
+
         if resource:
             subq = subq.filter(models.Resource.resource_id == resource)
         subq = subq.subquery()
@@ -538,15 +567,27 @@ class Connection(base.Connection):
                                               require_meter=False)
 
         query_sample = query_sample.limit(limit) if limit else query_sample
-        for row in query_sample.all():
-            yield api_models.Meter(
-                name=row.name,
-                type=row.type,
-                unit=row.unit,
-                resource_id=row.resource_id,
-                project_id=row.project_id,
-                source=row.source_id,
-                user_id=row.user_id)
+
+        if unique:
+            for row in query_sample.all():
+                yield api_models.Meter(
+                    name=row.name,
+                    type=row.type,
+                    unit=row.unit,
+                    resource_id=None,
+                    project_id=None,
+                    source=None,
+                    user_id=None)
+        else:
+            for row in query_sample.all():
+                yield api_models.Meter(
+                    name=row.name,
+                    type=row.type,
+                    unit=row.unit,
+                    resource_id=row.resource_id,
+                    project_id=row.project_id,
+                    source=row.source_id,
+                    user_id=row.user_id)
 
     @staticmethod
     def _retrieve_samples(query):
@@ -655,9 +696,10 @@ class Connection(base.Connection):
                 compute = PARAMETERIZED_AGGREGATES['compute'][a.func]
                 functions.append(compute(a.param))
             else:
-                raise ceilometer.NotImplementedError(
-                    'Selectable aggregate function %s'
-                    ' is not supported' % a.func)
+                # NOTE(zqfan): We already have checked at API level, but
+                # still leave it here in case of directly storage calls.
+                msg = _('Invalid aggregation function: %s') % a.func
+                raise storage.StorageBadAggregate(msg)
 
         return functions
 

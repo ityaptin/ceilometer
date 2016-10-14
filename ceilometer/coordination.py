@@ -13,20 +13,21 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import six
 import uuid
 
 from oslo_config import cfg
 from oslo_log import log
+import retrying
 import tooz.coordination
 
-from ceilometer.i18n import _LE, _LI
+from ceilometer.i18n import _LE, _LI, _LW
 from ceilometer import utils
 
 LOG = log.getLogger(__name__)
 
 OPTS = [
     cfg.StrOpt('backend_url',
-               default=None,
                help='The backend URL to use for distributed coordination. If '
                     'left empty, per-deployment central agent and per-host '
                     'compute agent won\'t do workload '
@@ -39,10 +40,39 @@ OPTS = [
     cfg.FloatOpt('check_watchers',
                  default=10.0,
                  help='Number of seconds between checks to see if group '
-                      'membership has changed')
-
+                      'membership has changed'),
+    cfg.IntOpt('retry_backoff',
+               default=1,
+               help='Retry backoff factor when retrying to connect with'
+                    'coordination backend'),
+    cfg.IntOpt('max_retry_interval',
+               default=30,
+               help='Maximum number of seconds between retry to join '
+                    'partitioning group')
 ]
 cfg.CONF.register_opts(OPTS, group='coordination')
+
+
+class ErrorJoiningPartitioningGroup(Exception):
+    def __init__(self):
+        super(ErrorJoiningPartitioningGroup, self).__init__(_LE(
+            'Coordination join_group Error joining partitioning group'))
+
+
+class MemberNotInGroupError(Exception):
+    def __init__(self, group_id, members, my_id):
+        super(MemberNotInGroupError, self).__init__(_LE(
+            'Group ID: %(group_id)s, Members: %(members)s, Me: %(me)s: '
+            'Current agent is not part of group and cannot take tasks') %
+            {'group_id': group_id, 'members': members, 'me': my_id})
+
+
+def retry_on_error_joining_partition(exception):
+    return isinstance(exception, ErrorJoiningPartitioningGroup)
+
+
+def retry_on_member_not_in_group(exception):
+    return isinstance(exception, MemberNotInGroupError)
 
 
 class PartitionCoordinator(object):
@@ -59,13 +89,14 @@ class PartitionCoordinator(object):
     empty iterable in this case.
     """
 
-    def __init__(self, my_id=None):
+    def __init__(self, conf, my_id=None):
+        self.conf = conf
         self._coordinator = None
         self._groups = set()
         self._my_id = my_id or str(uuid.uuid4())
 
     def start(self):
-        backend_url = cfg.CONF.coordination.backend_url
+        backend_url = self.conf.coordination.backend_url
         if backend_url:
             try:
                 self._coordinator = tooz.coordination.get_coordinator(
@@ -116,12 +147,20 @@ class PartitionCoordinator(object):
         if (not self._coordinator or not self._coordinator.is_started
                 or not group_id):
             return
-        while True:
+
+        retry_backoff = self.conf.coordination.retry_backoff * 1000
+        max_retry_interval = self.conf.coordination.max_retry_interval * 1000
+
+        @retrying.retry(
+            wait_exponential_multiplier=retry_backoff,
+            wait_exponential_max=max_retry_interval,
+            retry_on_exception=retry_on_error_joining_partition,
+            wrap_exception=True)
+        def _inner():
             try:
                 join_req = self._coordinator.join_group(group_id)
                 join_req.get()
                 LOG.info(_LI('Joined partitioning group %s'), group_id)
-                break
             except tooz.coordination.MemberAlreadyExist:
                 return
             except tooz.coordination.GroupNotCreated:
@@ -130,10 +169,14 @@ class PartitionCoordinator(object):
                     create_grp_req.get()
                 except tooz.coordination.GroupAlreadyExist:
                     pass
+                raise ErrorJoiningPartitioningGroup()
             except tooz.coordination.ToozError:
                 LOG.exception(_LE('Error joining partitioning group %s,'
                                   ' re-trying'), group_id)
-        self._groups.add(group_id)
+                raise ErrorJoiningPartitioningGroup()
+            self._groups.add(group_id)
+
+        return _inner()
 
     def leave_group(self, group_id):
         if group_id not in self._groups:
@@ -154,7 +197,9 @@ class PartitionCoordinator(object):
             except tooz.coordination.GroupNotCreated:
                 self.join_group(group_id)
 
-    def extract_my_subset(self, group_id, iterable):
+    @retrying.retry(stop_max_attempt_number=5, wait_random_max=2000,
+                    retry_on_exception=retry_on_member_not_in_group)
+    def extract_my_subset(self, group_id, iterable, attempt=0):
         """Filters an iterable, returning only objects assigned to this agent.
 
         We have a list of objects and get a list of active group members from
@@ -167,11 +212,24 @@ class PartitionCoordinator(object):
             self.join_group(group_id)
         try:
             members = self._get_members(group_id)
-            LOG.debug('Members of group: %s', members)
+            LOG.debug('Members of group %s are: %s, Me: %s',
+                      group_id, members, self._my_id)
+            if self._my_id not in members:
+                LOG.warning(_LW('Cannot extract tasks because agent failed to '
+                                'join group properly. Rejoining group.'))
+                self.join_group(group_id)
+                members = self._get_members(group_id)
+                if self._my_id not in members:
+                    raise MemberNotInGroupError(group_id, members, self._my_id)
+                LOG.debug('Members of group %s are: %s, Me: %s',
+                          group_id, members, self._my_id)
             hr = utils.HashRing(members)
+            iterable = list(iterable)
             filtered = [v for v in iterable
-                        if hr.get_node(str(v)) == self._my_id]
-            LOG.debug('My subset: %s', [str(f) for f in filtered])
+                        if hr.get_node(six.text_type(v)) == self._my_id]
+            LOG.debug('The universal set: %s, my subset: %s',
+                      [six.text_type(f) for f in iterable],
+                      [six.text_type(f) for f in filtered])
             return filtered
         except tooz.coordination.ToozError:
             LOG.exception(_LE('Error getting group membership info from '

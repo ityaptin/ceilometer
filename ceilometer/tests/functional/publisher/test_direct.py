@@ -72,8 +72,7 @@ class TestDirectPublisher(tests_db.TestBase):
                                group='database')
         parsed_url = netutils.urlsplit('direct://')
         publisher = direct.DirectPublisher(parsed_url)
-        publisher.publish_samples(None,
-                                  self.test_data)
+        publisher.publish_samples(self.test_data)
 
         meters = list(self.conn.get_meters(resource=self.resource_id))
         names = sorted([meter.name for meter in meters])
@@ -90,9 +89,9 @@ class TestEventDirectPublisher(tests_db.TestBase):
                  for i in range(0, 5)]
 
     def test_direct_publisher(self):
-        parsed_url = netutils.urlsplit('direct://')
+        parsed_url = netutils.urlsplit('direct://dispatcher=database')
         publisher = direct.DirectPublisher(parsed_url)
-        publisher.publish_events(None, self.test_data)
+        publisher.publish_events(self.test_data)
 
         e_types = list(self.event_conn.get_event_types())
         self.assertEqual(5, len(e_types))

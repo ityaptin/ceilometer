@@ -15,7 +15,6 @@
 """Tests for Ceilometer notify daemon."""
 
 import mock
-from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 import oslo_messaging
 from oslo_utils import fileutils
@@ -82,10 +81,6 @@ TEST_NOTICE_PAYLOAD = {
 }
 
 
-cfg.CONF.import_opt('store_events', 'ceilometer.notification',
-                    group='notification')
-
-
 class TestEventEndpoint(tests_base.BaseTestCase):
 
     def get_publisher(self, url, namespace=''):
@@ -113,7 +108,7 @@ class TestEventEndpoint(tests_base.BaseTestCase):
         self.CONF.set_override('event_pipeline_cfg_file',
                                ev_pipeline_cfg_file)
 
-        ev_pipeline_mgr = pipeline.setup_event_pipeline()
+        ev_pipeline_mgr = pipeline.setup_event_pipeline(self.CONF)
         return ev_pipeline_mgr
 
     def _setup_endpoint(self, publishers):
@@ -130,7 +125,6 @@ class TestEventEndpoint(tests_base.BaseTestCase):
         self.CONF = self.useFixture(fixture_config.Config()).conf
         self.CONF([])
         self.CONF.set_override("connection", "log://", group='database')
-        self.CONF.set_override("store_events", True, group="notification")
         self.setup_messaging(self.CONF)
 
         self.useFixture(mockpatch.PatchObject(publisher, 'get_publisher',
@@ -142,18 +136,23 @@ class TestEventEndpoint(tests_base.BaseTestCase):
 
     def test_message_to_event(self):
         self._setup_endpoint(['test://'])
-        self.endpoint.info(TEST_NOTICE_CTXT, 'compute.vagrant-precise',
-                           'compute.instance.create.end',
-                           TEST_NOTICE_PAYLOAD, TEST_NOTICE_METADATA)
+        self.endpoint.info([{'ctxt': TEST_NOTICE_CTXT,
+                             'publisher_id': 'compute.vagrant-precise',
+                             'event_type': 'compute.instance.create.end',
+                             'payload': TEST_NOTICE_PAYLOAD,
+                             'metadata': TEST_NOTICE_METADATA}])
 
     def test_bad_event_non_ack_and_requeue(self):
         self._setup_endpoint(['test://'])
         self.fake_publisher.publish_events.side_effect = Exception
         self.CONF.set_override("ack_on_event_error", False,
                                group="notification")
-        ret = self.endpoint.info(TEST_NOTICE_CTXT, 'compute.vagrant-precise',
-                                 'compute.instance.create.end',
-                                 TEST_NOTICE_PAYLOAD, TEST_NOTICE_METADATA)
+        ret = self.endpoint.info([{'ctxt': TEST_NOTICE_CTXT,
+                                   'publisher_id': 'compute.vagrant-precise',
+                                   'event_type': 'compute.instance.create.end',
+                                   'payload': TEST_NOTICE_PAYLOAD,
+                                   'metadata': TEST_NOTICE_METADATA}])
+
         self.assertEqual(oslo_messaging.NotificationResult.REQUEUE, ret)
 
     def test_message_to_event_bad_event(self):
@@ -162,9 +161,13 @@ class TestEventEndpoint(tests_base.BaseTestCase):
         self.CONF.set_override("ack_on_event_error", False,
                                group="notification")
 
-        message = {'event_type': "foo", 'message_id': "abc"}
+        message = {
+            'payload': {'event_type': "foo", 'message_id': "abc"},
+            'metadata': {},
+            'ctxt': {}
+        }
         with mock.patch("ceilometer.pipeline.LOG") as mock_logger:
-            ret = self.endpoint.process_notification(message)
+            ret = self.endpoint.process_notification('info', [message])
             self.assertEqual(oslo_messaging.NotificationResult.REQUEUE, ret)
             exception_mock = mock_logger.exception
             self.assertIn('Exit after error from publisher',
@@ -178,10 +181,13 @@ class TestEventEndpoint(tests_base.BaseTestCase):
         self.CONF.set_override("ack_on_event_error", False,
                                group="notification")
 
-        message = {'event_type': "foo", 'message_id': "abc"}
-
+        message = {
+            'payload': {'event_type': "foo", 'message_id': "abc"},
+            'metadata': {},
+            'ctxt': {}
+        }
         with mock.patch("ceilometer.pipeline.LOG") as mock_logger:
-            ret = self.endpoint.process_notification(message)
+            ret = self.endpoint.process_notification('info', [message])
             self.assertEqual(oslo_messaging.NotificationResult.HANDLED, ret)
             exception_mock = mock_logger.exception
             self.assertIn('Continue after error from publisher',

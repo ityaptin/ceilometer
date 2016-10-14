@@ -13,11 +13,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-from oslo_log import log
-
 from ceilometer.agent import plugin_base
-
-LOG = log.getLogger(__name__)
 
 
 # status map for converting metric status to volume int
@@ -25,18 +21,17 @@ STATUS = {
     'inactive': 0,
     'active': 1,
     'pending_create': 2,
+    'down': 3,
+    'created': 4,
+    'pending_update': 5,
+    'pending_delete': 6,
+    'error': 7,
 }
 
 
 class BaseServicesPollster(plugin_base.PollsterBase):
 
     FIELDS = []
-
-    @staticmethod
-    def _iter_cache(cache, meter_name, method):
-        if meter_name not in cache:
-            cache[meter_name] = list(method())
-        return iter(cache[meter_name])
 
     def extract_metadata(self, metric):
         return dict((k, metric[k]) for k in self.FIELDS)

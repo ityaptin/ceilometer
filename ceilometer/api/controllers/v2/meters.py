@@ -21,8 +21,6 @@
 import base64
 import datetime
 
-from oslo_config import cfg
-from oslo_context import context
 from oslo_log import log
 from oslo_utils import strutils
 from oslo_utils import timeutils
@@ -40,6 +38,7 @@ from ceilometer.i18n import _
 from ceilometer.publisher import utils as publisher_utils
 from ceilometer import sample
 from ceilometer import storage
+from ceilometer.storage import base as storage_base
 from ceilometer import utils
 
 LOG = log.getLogger(__name__)
@@ -117,8 +116,8 @@ class OldSample(base.Base):
                    resource_id='bd9431c1-8d69-4ad3-803a-8d4a6b89fd36',
                    project_id='35b17138-b364-4e6a-a131-8f3099c5be68',
                    user_id='efd87807-12d2-4b38-9c70-5f5c2ac427ff',
-                   recorded_at=datetime.datetime.utcnow(),
-                   timestamp=datetime.datetime.utcnow(),
+                   recorded_at=datetime.datetime(2015, 1, 1, 12, 0, 0, 0),
+                   timestamp=datetime.datetime(2015, 1, 1, 12, 0, 0, 0),
                    resource_metadata={'name1': 'value1',
                                       'name2': 'value2'},
                    message_id='5460acce-4fd6-480d-ab18-9735ec7b1996',
@@ -235,6 +234,11 @@ class Aggregate(base.Base):
 
     @staticmethod
     def validate(aggregate):
+        valid_agg = (storage_base.Connection.CAPABILITIES.get('statistics', {})
+                     .get('aggregation', {}).get('selectable', {}).keys())
+        if aggregate.func not in valid_agg:
+            msg = _('Invalid aggregation function: %s') % aggregate.func
+            raise base.ClientSideError(msg)
         return aggregate
 
     @classmethod
@@ -355,7 +359,8 @@ class MeterController(rest.RestController):
             s.message_id = published_sample.id
 
             sample_dict = publisher_utils.meter_message_from_counter(
-                published_sample, cfg.CONF.publisher.telemetry_secret)
+                published_sample,
+                pecan.request.cfg.publisher.telemetry_secret)
             if direct:
                 ts = timeutils.parse_isotime(sample_dict['timestamp'])
                 sample_dict['timestamp'] = timeutils.normalize_time(ts)
@@ -363,12 +368,12 @@ class MeterController(rest.RestController):
             else:
                 published_samples.append(sample_dict)
         if not direct:
-            ctxt = context.RequestContext(user=def_user_id,
-                                          tenant=def_project_id,
-                                          is_admin=True)
-            notifier = pecan.request.notifier
-            notifier.sample(ctxt.to_dict(), 'telemetry.api',
-                            {'samples': published_samples})
+            pecan.request.notifier.sample(
+                {'user': def_user_id,
+                 'tenant': def_project_id,
+                 'is_admin': True},
+                'telemetry.api',
+                {'samples': published_samples})
 
         return samples
 
@@ -477,11 +482,12 @@ class MetersController(rest.RestController):
     def _lookup(self, meter_name, *remainder):
         return MeterController(meter_name), remainder
 
-    @wsme_pecan.wsexpose([Meter], [base.Query], int)
-    def get_all(self, q=None, limit=None):
+    @wsme_pecan.wsexpose([Meter], [base.Query], int, str)
+    def get_all(self, q=None, limit=None, unique=''):
         """Return all known meters, based on the data recorded so far.
 
         :param q: Filter rules for the meters to be returned.
+        :param unique: flag to indicate unique meters to be returned.
         """
 
         rbac.enforce('get_meters', pecan.request)
@@ -494,5 +500,6 @@ class MetersController(rest.RestController):
             q, pecan.request.storage_conn.get_meters,
             ['limit'], allow_timestamps=False)
         return [Meter.from_db_model(m)
-                for m in pecan.request.storage_conn.get_meters(limit=limit,
-                                                               **kwargs)]
+                for m in pecan.request.storage_conn.get_meters(
+                limit=limit, unique=strutils.bool_from_string(unique),
+                **kwargs)]

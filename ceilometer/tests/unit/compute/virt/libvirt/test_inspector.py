@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Copyright 2012 Red Hat, Inc
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -43,7 +41,6 @@ class TestLibvirtInspection(base.BaseTestCase):
             name = 'instance-00000001'
         self.instance = VMInstance
         self.inspector = libvirt_inspector.LibvirtInspector()
-        self.inspector.connection = mock.Mock()
         libvirt_inspector.libvirt = mock.Mock()
         libvirt_inspector.libvirt.VIR_DOMAIN_SHUTOFF = 5
         libvirt_inspector.libvirt.libvirtError = self.fakeLibvirtError
@@ -61,6 +58,30 @@ class TestLibvirtInspection(base.BaseTestCase):
             cpu_info = self.inspector.inspect_cpus(self.instance)
             self.assertEqual(2, cpu_info.number)
             self.assertEqual(999999, cpu_info.time)
+
+    def test_inspect_cpus_with_domain_shutoff(self):
+        connection = self.inspector.connection
+        with mock.patch.object(connection, 'lookupByUUIDString',
+                               return_value=self.domain):
+            with mock.patch.object(self.domain, 'info',
+                                   return_value=(5, 0, 0,
+                                                 2, 999999)):
+                self.assertRaises(virt_inspector.InstanceShutOffException,
+                                  self.inspector.inspect_cpus,
+                                  self.instance)
+
+    def test_inspect_cpu_l3_cache(self):
+        fake_stats = [({}, {'perf.cmt': 90112})]
+        connection = self.inspector.connection
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(connection,
+                                                  'lookupByUUIDString',
+                                                  return_value=self.domain))
+            stack.enter_context(mock.patch.object(connection,
+                                                  'domainListGetStats',
+                                                  return_value=fake_stats))
+            cpu_info = self.inspector.inspect_cpu_l3_cache(self.instance)
+            self.assertEqual(90112, cpu_info.l3_cache_usage)
 
     def test_inspect_vnics(self):
         dom_xml = """
@@ -294,6 +315,38 @@ class TestLibvirtInspection(base.BaseTestCase):
             self.assertEqual(2, info0.allocation)
             self.assertEqual(3, info0.physical)
 
+    def test_inspect_disk_info_network_type(self):
+        dom_xml = """
+             <domain type='kvm'>
+                 <devices>
+                     <disk type='network' device='disk'>
+                         <driver name='qemu' type='qcow2' cache='none'/>
+                         <source file='/path/instance-00000001/disk'/>
+                         <target dev='vda' bus='virtio'/>
+                         <alias name='virtio-disk0'/>
+                         <address type='pci' domain='0x0000' bus='0x00'
+                                  slot='0x04' function='0x0'/>
+                     </disk>
+                 </devices>
+             </domain>
+        """
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(self.inspector.connection,
+                                                  'lookupByUUIDString',
+                                                  return_value=self.domain))
+            stack.enter_context(mock.patch.object(self.domain, 'XMLDesc',
+                                                  return_value=dom_xml))
+            stack.enter_context(mock.patch.object(self.domain, 'blockInfo',
+                                                  return_value=(1, 2, 3,
+                                                                -1)))
+            stack.enter_context(mock.patch.object(self.domain, 'info',
+                                                  return_value=(0, 0, 0,
+                                                                2, 999999)))
+            disks = list(self.inspector.inspect_disk_info(self.instance))
+
+            self.assertEqual(0, len(disks))
+
     def test_inspect_memory_usage_with_domain_shutoff(self):
         connection = self.inspector.connection
         with mock.patch.object(connection, 'lookupByUUIDString',
@@ -314,8 +367,55 @@ class TestLibvirtInspection(base.BaseTestCase):
                                                  2, 999999)):
                 with mock.patch.object(self.domain, 'memoryStats',
                                        return_value={}):
-                    self.assertRaises(virt_inspector.NoDataException,
+                    self.assertRaises(virt_inspector.InstanceNoDataException,
                                       self.inspector.inspect_memory_usage,
+                                      self.instance)
+
+    def test_inspect_memory_bandwidth(self):
+        fake_stats = [({}, {'perf.mbmt': 1892352, 'perf.mbml': 1802240})]
+        connection = self.inspector.connection
+        with mock.patch.object(connection, 'lookupByUUIDString',
+                               return_value=self.domain):
+            with mock.patch.object(self.domain, 'info',
+                                   return_value=(0, 0, 51200,
+                                                 2, 999999)):
+                with mock.patch.object(connection, 'domainListGetStats',
+                                       return_value=fake_stats):
+                    mb = self.inspector.inspect_memory_bandwidth(self.instance)
+                    self.assertEqual(1892352, mb.total)
+                    self.assertEqual(1802240, mb.local)
+
+    def test_inspect_perf_events(self):
+        fake_stats = [({}, {'perf.cpu_cycles': 7259361,
+                            'perf.instructions': 8815623,
+                            'perf.cache_references': 74184,
+                            'perf.cache_misses': 16737})]
+        connection = self.inspector.connection
+        with mock.patch.object(connection, 'lookupByUUIDString',
+                               return_value=self.domain):
+            with mock.patch.object(self.domain, 'info',
+                                   return_value=(0, 0, 51200,
+                                                 2, 999999)):
+                with mock.patch.object(connection, 'domainListGetStats',
+                                       return_value=fake_stats):
+                    pe = self.inspector.inspect_perf_events(self.instance)
+                    self.assertEqual(7259361, pe.cpu_cycles)
+                    self.assertEqual(8815623, pe.instructions)
+                    self.assertEqual(74184, pe.cache_references)
+                    self.assertEqual(16737, pe.cache_misses)
+
+    def test_inspect_perf_events_libvirt_less_than_2_3_0(self):
+        fake_stats = [({}, {})]
+        connection = self.inspector.connection
+        with mock.patch.object(connection, 'lookupByUUIDString',
+                               return_value=self.domain):
+            with mock.patch.object(self.domain, 'info',
+                                   return_value=(0, 0, 51200,
+                                                 2, 999999)):
+                with mock.patch.object(connection, 'domainListGetStats',
+                                       return_value=fake_stats):
+                    self.assertRaises(virt_inspector.NoDataException,
+                                      self.inspector.inspect_perf_events,
                                       self.instance)
 
 
@@ -329,14 +429,10 @@ class TestLibvirtInspectionWithError(base.BaseTestCase):
         self.inspector = libvirt_inspector.LibvirtInspector()
         self.useFixture(fixtures.MonkeyPatch(
             'ceilometer.compute.virt.libvirt.inspector.'
-            'LibvirtInspector._get_connection',
-            self._dummy_get_connection))
+            'LibvirtInspector.connection',
+            mock.MagicMock(side_effect=Exception('dummy'))))
         libvirt_inspector.libvirt = mock.Mock()
         libvirt_inspector.libvirt.libvirtError = self.fakeLibvirtError
-
-    @staticmethod
-    def _dummy_get_connection(*args, **kwargs):
-        raise Exception('dummy')
 
     def test_inspect_unknown_error(self):
         self.assertRaises(virt_inspector.InspectorException,
@@ -350,16 +446,15 @@ class TestLibvirtInitWithError(base.BaseTestCase):
         self.inspector = libvirt_inspector.LibvirtInspector()
         libvirt_inspector.libvirt = mock.Mock()
 
-    @mock.patch('ceilometer.compute.virt.libvirt.inspector.'
-                'LibvirtInspector._get_connection',
-                mock.Mock(return_value=None))
     def test_init_error(self):
-        self.assertRaises(virt_inspector.NoSanityException,
-                          self.inspector.check_sanity)
+        with mock.patch.object(libvirt_inspector.libvirt,
+                               'openReadOnly',
+                               return_value=None):
+            self.assertRaises(virt_inspector.NoSanityException,
+                              self.inspector.check_sanity)
 
-    @mock.patch('ceilometer.compute.virt.libvirt.inspector.'
-                'LibvirtInspector._get_connection',
-                mock.Mock(side_effect=virt_inspector.NoDataException))
     def test_init_exception(self):
-        self.assertRaises(virt_inspector.NoDataException,
-                          self.inspector.check_sanity)
+        with mock.patch.object(libvirt_inspector.libvirt,
+                               'openReadOnly',
+                               side_effect=ImportError):
+            self.assertRaises(ImportError, self.inspector.check_sanity)

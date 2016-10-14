@@ -14,7 +14,6 @@
 import os
 
 from jsonpath_rw_ext import parser
-from oslo_config import cfg
 from oslo_log import log
 import six
 import yaml
@@ -26,12 +25,26 @@ LOG = log.getLogger(__name__)
 
 class DefinitionException(Exception):
     def __init__(self, message, definition_cfg):
-        super(DefinitionException, self).__init__(message)
-        self.definition_cfg = definition_cfg
+        msg = '%s %s: %s' % (self.__class__.__name__, definition_cfg, message)
+        super(DefinitionException, self).__init__(msg)
+        self.brief_message = message
+
+
+class MeterDefinitionException(DefinitionException):
+    pass
+
+
+class EventDefinitionException(DefinitionException):
+    pass
+
+
+class ResourceDefinitionException(DefinitionException):
+    pass
 
 
 class Definition(object):
     JSONPATH_RW_PARSER = parser.ExtentedJsonPathParser()
+    GETTERS_CACHE = {}
 
     def __init__(self, name, cfg, plugin_manager):
         self.cfg = cfg
@@ -85,7 +98,7 @@ class Definition(object):
             self.getter = fields
         else:
             try:
-                self.getter = self.JSONPATH_RW_PARSER.parse(fields).find
+                self.getter = self.make_getter(fields)
             except Exception as e:
                 raise DefinitionException(
                     _("Parse error in JSONPath specification "
@@ -111,7 +124,7 @@ class Definition(object):
             if return_all_values and not self.plugin.support_return_all_values:
                 raise DefinitionException("Plugin %s don't allows to "
                                           "return multiple values" %
-                                          self.cfg["plugin"]["name"])
+                                          self.cfg["plugin"]["name"], self.cfg)
             values_map = [('.'.join(self._get_path(match)), match.value) for
                           match in values]
             values = [v for v in self.plugin.trait_values(values_map)
@@ -123,12 +136,20 @@ class Definition(object):
         else:
             return values[0] if values else None
 
+    def make_getter(self, fields):
+        if fields in self.GETTERS_CACHE:
+            return self.GETTERS_CACHE[fields]
+        else:
+            getter = self.JSONPATH_RW_PARSER.parse(fields).find
+            self.GETTERS_CACHE[fields] = getter
+            return getter
 
-def load_definitions(defaults, config_file, fallback_file=None):
+
+def load_definitions(conf, defaults, config_file, fallback_file=None):
     """Setup a definitions from yaml config file."""
 
     if not os.path.exists(config_file):
-        config_file = cfg.CONF.find_file(config_file)
+        config_file = conf.find_file(config_file)
     if not config_file and fallback_file is not None:
         LOG.debug("No Definitions configuration file found!"
                   "Using default config.")

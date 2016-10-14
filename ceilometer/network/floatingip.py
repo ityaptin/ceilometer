@@ -1,6 +1,6 @@
-#
+# Copyright 2016 Sungard Availability Services
+# Copyright 2016 Red Hat
 # Copyright 2012 eNovance <licensing@enovance.com>
-#
 # Copyright 2013 IBM Corp
 # All Rights Reserved.
 #
@@ -18,56 +18,45 @@
 
 from oslo_config import cfg
 from oslo_log import log
-from oslo_utils import timeutils
 
-from ceilometer.agent import plugin_base
-from ceilometer.i18n import _LI
-from ceilometer import nova_client
+from ceilometer.i18n import _LW
+from ceilometer.network.services import base
 from ceilometer import sample
-
 
 LOG = log.getLogger(__name__)
 
+cfg.CONF.import_group('service_types', 'ceilometer.neutron_client')
 
-class FloatingIPPollster(plugin_base.PollsterBase):
 
-    @staticmethod
-    def _get_floating_ips(ksclient, endpoint):
-        nv = nova_client.Client(
-            auth=ksclient.session.auth,
-            endpoint_override=endpoint)
-        return nv.floating_ip_get_all()
+class FloatingIPPollster(base.BaseServicesPollster):
 
-    def _iter_floating_ips(self, ksclient, cache, endpoint):
-        key = '%s-floating_ips' % endpoint
-        if key not in cache:
-            cache[key] = list(self._get_floating_ips(ksclient, endpoint))
-        return iter(cache[key])
+    FIELDS = ['router_id',
+              'status',
+              'floating_network_id',
+              'fixed_ip_address',
+              'port_id',
+              'floating_ip_address',
+              ]
 
     @property
     def default_discovery(self):
-        return 'endpoint:%s' % cfg.CONF.service_types.nova
+        return 'fip_services'
 
     def get_samples(self, manager, cache, resources):
-        for endpoint in resources:
-            for ip in self._iter_floating_ips(manager.keystone, cache,
-                                              endpoint):
-                LOG.info(_LI("FLOATING IP USAGE: %s") % ip.ip)
-                # FIXME (flwang) Now Nova API /os-floating-ips can't provide
-                # those attributes were used by Ceilometer, such as project
-                # id, host. In this fix, those attributes usage will be
-                # removed temporarily. And they will be back after fix the
-                # Nova bug 1174802.
-                yield sample.Sample(
-                    name='ip.floating',
-                    type=sample.TYPE_GAUGE,
-                    unit='ip',
-                    volume=1,
-                    user_id=None,
-                    project_id=None,
-                    resource_id=ip.id,
-                    timestamp=timeutils.utcnow().isoformat(),
-                    resource_metadata={
-                        'address': ip.ip,
-                        'pool': ip.pool
-                    })
+
+        for fip in resources or []:
+            if fip['status'] is None:
+                LOG.warning(_LW("Invalid status, skipping IP address %s") %
+                            fip['floating_ip_address'])
+                continue
+            status = self.get_status_id(fip['status'])
+            yield sample.Sample(
+                name='ip.floating',
+                type=sample.TYPE_GAUGE,
+                unit='ip',
+                volume=status,
+                user_id=fip.get('user_id'),
+                project_id=fip['tenant_id'],
+                resource_id=fip['id'],
+                resource_metadata=self.extract_metadata(fip)
+            )

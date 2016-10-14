@@ -14,9 +14,7 @@
 # under the License.
 
 import itertools
-import os
 import pkg_resources
-import yaml
 
 from oslo_config import cfg
 from oslo_log import log
@@ -24,9 +22,10 @@ from oslo_utils import netutils
 import six
 
 from ceilometer.agent import plugin_base
+from ceilometer import declarative
 from ceilometer.hardware import inspector as insloader
 from ceilometer.hardware.pollsters import util
-from ceilometer.i18n import _LE, _LI, _LW
+from ceilometer.i18n import _LE, _LW
 from ceilometer import sample
 
 OPTS = [
@@ -39,17 +38,6 @@ OPTS = [
 cfg.CONF.register_opts(OPTS, group='hardware')
 
 LOG = log.getLogger(__name__)
-
-
-class MeterDefinitionException(Exception):
-    def __init__(self, message, definition_cfg):
-        super(MeterDefinitionException, self).__init__(message)
-        self.message = message
-        self.definition_cfg = definition_cfg
-
-    def __str__(self):
-        return '%s %s: %s' % (self.__class__.__name__,
-                              self.definition_cfg, self.message)
 
 
 class MeterDefinition(object):
@@ -66,10 +54,10 @@ class MeterDefinition(object):
                 LOG.warning(_LW("Ignore unrecognized field %s"), fname)
         for fname in self.required_fields:
             if not getattr(self, fname, None):
-                raise MeterDefinitionException(
+                raise declarative.MeterDefinitionException(
                     _LE("Missing field %s") % fname, self.cfg)
         if self.type not in sample.TYPES:
-            raise MeterDefinitionException(
+            raise declarative.MeterDefinitionException(
                 _LE("Unrecognized type value %s") % self.type, self.cfg)
 
 
@@ -205,7 +193,10 @@ class GenericHardwareDeclarativePollster(plugin_base.PollsterBase):
     @classmethod
     def build_pollsters(cls):
         if not cls.mapping:
-            cls.mapping = load_definition(setup_meters_config())
+            definition_cfg = declarative.load_definitions(
+                cfg.CONF, {}, cfg.CONF.hardware.meter_definitions_file,
+                pkg_resources.resource_filename(__name__, "data/snmp.yaml"))
+            cls.mapping = load_definition(definition_cfg)
 
         pollsters = []
         for name in cls.mapping:
@@ -215,54 +206,13 @@ class GenericHardwareDeclarativePollster(plugin_base.PollsterBase):
         return pollsters
 
 
-def get_config_file():
-    config_file = cfg.CONF.hardware.meter_definitions_file
-    if not os.path.exists(config_file):
-        config_file = cfg.CONF.find_file(config_file)
-    if not config_file:
-        config_file = pkg_resources.resource_filename(
-            __name__, "data/snmp.yaml")
-    return config_file
-
-
-def setup_meters_config():
-    """load the meters definitions from yaml config file."""
-    config_file = get_config_file()
-
-    LOG.debug("Hardware snmp meter definition file: %s" % config_file)
-    with open(config_file) as cf:
-        config = cf.read()
-
-    try:
-        meters_config = yaml.safe_load(config)
-    except yaml.YAMLError as err:
-        if hasattr(err, 'problem_mark'):
-            mark = err.problem_mark
-            errmsg = (_LE("Invalid YAML syntax in Meter Definitions file "
-                      "%(file)s at line: %(line)s, column: %(column)s.")
-                      % dict(file=config_file,
-                             line=mark.line + 1,
-                             column=mark.column + 1))
-        else:
-            errmsg = (_LE("YAML error reading Meter Definitions file "
-                      "%(file)s")
-                      % dict(file=config_file))
-        LOG.error(errmsg)
-        raise
-
-    LOG.info(_LI("Meter Definitions: %s") % meters_config)
-
-    return meters_config
-
-
 def load_definition(config_def):
     mappings = {}
     for meter_def in config_def.get('metric', []):
         try:
             meter = MeterDefinition(meter_def)
             mappings[meter.name] = meter
-        except MeterDefinitionException as me:
-            errmsg = (_LE("Error loading meter definition : %(err)s")
-                      % dict(err=me.message))
-            LOG.error(errmsg)
+        except declarative.DefinitionException as e:
+            errmsg = _LE("Error loading meter definition: %s")
+            LOG.error(errmsg, e.brief_message)
     return mappings

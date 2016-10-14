@@ -172,7 +172,7 @@ class TestMaxResourceVolume(v2.FunctionalTest):
                              period=-1)
         self.assertEqual(400, resp.status_code)
 
-    @tests_db.run_with('sqlite', 'mysql', 'pgsql', 'hbase', 'db2')
+    @tests_db.run_with('sqlite', 'mysql', 'pgsql', 'hbase')
     def test_period_with_large_value(self):
         resp = self.get_json(self.PATH, expect_errors=True,
                              q=[{'field': 'user_id',
@@ -1208,7 +1208,7 @@ class TestGroupByInstance(v2.FunctionalTest):
                                      u'2013-08-01T14:00:00'])
 
 
-@tests_db.run_with('mongodb', 'hbase', 'db2')
+@tests_db.run_with('mongodb', 'hbase')
 class TestGroupBySource(v2.FunctionalTest):
 
     # FIXME(terriyu): We have to put test_group_by_source in its own class
@@ -1551,7 +1551,7 @@ class TestSelectableAggregates(v2.FunctionalTest):
                          'Bad aggregate: cardinality.injection_attack')
 
 
-@tests_db.run_with('mongodb', 'hbase', 'db2')
+@tests_db.run_with('mongodb', 'hbase')
 class TestUnparameterizedAggregates(v2.FunctionalTest):
 
     # We put the stddev test case in a separate class so that we
@@ -1559,7 +1559,7 @@ class TestUnparameterizedAggregates(v2.FunctionalTest):
     # support the stddev_pop function and fails ungracefully with
     # OperationalError when it is used. However we still want to
     # test the corresponding functionality in the mongo driver.
-    # For hbase & db2, the skip on NotImplementedError logic works
+    # For hbase, the skip on NotImplementedError logic works
     # in the usual way.
 
     PATH = '/meters/instance/statistics'
@@ -1649,3 +1649,45 @@ class TestUnparameterizedAggregates(v2.FunctionalTest):
                                            places=4)
                     for a in standard_aggregates:
                         self.assertNotIn(a, r)
+
+
+@tests_db.run_with('mongodb')
+class TestBigValueStatistics(v2.FunctionalTest):
+
+    PATH = '/meters/volume.size/statistics'
+
+    def setUp(self):
+        super(TestBigValueStatistics, self).setUp()
+        for i in range(0, 3):
+            s = sample.Sample(
+                'volume.size',
+                'gauge',
+                'GiB',
+                (i + 1) * (10 ** 12),
+                'user-id',
+                'project1',
+                'resource-id',
+                timestamp=datetime.datetime(2012, 9, 25, 10 + i, 30 + i),
+                resource_metadata={'display_name': 'test-volume',
+                                   'tag': 'self.sample',
+                                   },
+                source='source1',
+            )
+            msg = utils.meter_message_from_counter(
+                s, self.CONF.publisher.telemetry_secret,
+            )
+            self.conn.record_metering_data(msg)
+
+    def test_big_value_statistics(self):
+        data = self.get_json(self.PATH)
+
+        expected_values = {'count': 3,
+                           'min': 10 ** 12,
+                           'max': 3 * 10 ** 12,
+                           'sum': 6 * 10 ** 12,
+                           'avg': 2 * 10 ** 12}
+        self.assertEqual(1, len(data))
+        for d in data:
+            for name, expected_value in expected_values.items():
+                self.assertIn(name, d)
+                self.assertEqual(expected_value, d[name])

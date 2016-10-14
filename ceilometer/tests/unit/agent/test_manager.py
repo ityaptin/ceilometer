@@ -16,10 +16,10 @@
 
 import shutil
 
-from keystoneclient import exceptions as ks_exceptions
+from keystoneauth1 import exceptions as ka_exceptions
 import mock
 from novaclient import client as novaclient
-from oslo_service import service as os_service
+from oslo_config import fixture as fixture_config
 from oslo_utils import fileutils
 from oslotest import base
 from oslotest import mockpatch
@@ -33,6 +33,10 @@ from ceilometer.agent import plugin_base
 from ceilometer.hardware import discovery
 from ceilometer import pipeline
 from ceilometer.tests.unit.agent import agentbase
+
+
+def fakedelayed(delay, target, *args, **kwargs):
+    return target(*args, **kwargs)
 
 
 class PollingException(Exception):
@@ -49,23 +53,41 @@ class TestPollsterBuilder(agentbase.TestPollster):
             'BaseComputePollster.setup_environment',
             mock.Mock(return_value=None))
 class TestManager(base.BaseTestCase):
+    def setUp(self):
+        super(TestManager, self).setUp()
+        self.conf = self.useFixture(fixture_config.Config()).conf
+        self.conf(args=[])
 
     @mock.patch('ceilometer.pipeline.setup_polling', mock.MagicMock())
     def test_load_plugins(self):
-        mgr = manager.AgentManager()
+        mgr = manager.AgentManager(0, self.conf)
         self.assertIsNotNone(list(mgr.extensions))
 
     def test_load_plugins_pollster_list(self):
-        mgr = manager.AgentManager(pollster_list=['disk.*'])
+        mgr = manager.AgentManager(0, self.conf, pollster_list=['disk.*'])
         # currently we do have 26 disk-related pollsters
         self.assertEqual(26, len(list(mgr.extensions)))
+
+    def test_load_invalid_plugins_pollster_list(self):
+        # if no valid pollsters have been loaded, the ceilometer
+        # polling program should exit
+        self.assertRaisesRegexp(
+            manager.EmptyPollstersList,
+            'No valid pollsters can be loaded with the startup parameters'
+            ' polling-namespaces and pollster-list.',
+            manager.AgentManager, 0, self.conf,
+            pollster_list=['aaa'])
 
     def test_load_plugins_no_intersection(self):
         # Let's test nothing will be polled if namespace and pollsters
         # list have no intersection.
-        mgr = manager.AgentManager(namespaces=['compute'],
-                                   pollster_list=['storage.*'])
-        self.assertEqual(0, len(list(mgr.extensions)))
+        parameters = dict(namespaces=['compute'],
+                          pollster_list=['storage.*'])
+        self.assertRaisesRegexp(
+            manager.EmptyPollstersList,
+            'No valid pollsters can be loaded with the startup parameters'
+            ' polling-namespaces and pollster-list.',
+            manager.AgentManager, 0, self.conf, parameters)
 
     # Test plugin load behavior based on Node Manager pollsters.
     # pollster_list is just a filter, so sensor pollsters under 'ipmi'
@@ -75,7 +97,8 @@ class TestManager(base.BaseTestCase):
     @mock.patch('ceilometer.ipmi.pollsters.sensor.SensorPollster.__init__',
                 mock.Mock(return_value=None))
     def test_load_normal_plugins(self):
-        mgr = manager.AgentManager(namespaces=['ipmi'],
+        mgr = manager.AgentManager(0, self.conf,
+                                   namespaces=['ipmi'],
                                    pollster_list=['hardware.ipmi.node.*'])
         # 8 pollsters for Node Manager
         self.assertEqual(8, len(mgr.extensions))
@@ -89,18 +112,18 @@ class TestManager(base.BaseTestCase):
     def test_load_failed_plugins(self, LOG):
         # Here we additionally check that namespaces will be converted to the
         # list if param was not set as a list.
-        mgr = manager.AgentManager(namespaces='ipmi',
-                                   pollster_list=['hardware.ipmi.node.*'])
-        # 0 pollsters
-        self.assertEqual(0, len(mgr.extensions))
-
-        err_msg = 'Skip loading extension for hardware.ipmi.node.%s'
-        pollster_names = [
-            'power', 'temperature', 'outlet_temperature',
-            'airflow', 'cups', 'cpu_util', 'mem_util', 'io_util']
-        calls = [mock.call(err_msg % n) for n in pollster_names]
-        LOG.error.assert_has_calls(calls=calls,
-                                   any_order=True)
+        try:
+            manager.AgentManager(0, self.conf,
+                                 namespaces='ipmi',
+                                 pollster_list=['hardware.ipmi.node.*'])
+        except manager.EmptyPollstersList:
+            err_msg = 'Skip loading extension for %s'
+            pollster_names = [
+                'power', 'temperature', 'outlet_temperature',
+                'airflow', 'cups', 'cpu_util', 'mem_util', 'io_util']
+            calls = [mock.call(err_msg, 'hardware.ipmi.node.%s' % n)
+                     for n in pollster_names]
+            LOG.exception.assert_has_calls(calls=calls, any_order=True)
 
     # Skip loading pollster upon ImportError
     @mock.patch('ceilometer.ipmi.pollsters.node._Base.__init__',
@@ -108,10 +131,13 @@ class TestManager(base.BaseTestCase):
     @mock.patch('ceilometer.ipmi.pollsters.sensor.SensorPollster.__init__',
                 mock.Mock(return_value=None))
     def test_import_error_in_plugin(self):
-        mgr = manager.AgentManager(namespaces=['ipmi'],
-                                   pollster_list=['hardware.ipmi.node.*'])
-        # 0 pollsters
-        self.assertEqual(0, len(mgr.extensions))
+        parameters = dict(namespaces=['ipmi'],
+                          pollster_list=['hardware.ipmi.node.*'])
+        self.assertRaisesRegexp(
+            manager.EmptyPollstersList,
+            'No valid pollsters can be loaded with the startup parameters'
+            ' polling-namespaces and pollster-list.',
+            manager.AgentManager, 0, self.conf, parameters)
 
     # Exceptions other than ExtensionLoadError are propagated
     @mock.patch('ceilometer.ipmi.pollsters.node._Base.__init__',
@@ -121,16 +147,17 @@ class TestManager(base.BaseTestCase):
     def test_load_exceptional_plugins(self):
         self.assertRaises(PollingException,
                           manager.AgentManager,
+                          0, self.conf,
                           ['ipmi'],
                           ['hardware.ipmi.node.*'])
 
     def test_load_plugins_pollster_list_forbidden(self):
-        manager.cfg.CONF.set_override('backend_url', 'http://',
-                                      group='coordination')
+        self.conf.set_override('backend_url', 'http://',
+                               group='coordination')
         self.assertRaises(manager.PollsterListForbidden,
                           manager.AgentManager,
+                          0, self.conf,
                           pollster_list=['disk.*'])
-        manager.cfg.CONF.reset()
 
     def test_builder(self):
         @staticmethod
@@ -156,7 +183,7 @@ class TestManager(base.BaseTestCase):
 
         with mock.patch.object(manager.AgentManager, '_get_ext_mgr',
                                new=fake_get_ext_mgr):
-            mgr = manager.AgentManager(namespaces=['central'])
+            mgr = manager.AgentManager(0, self.conf, namespaces=['central'])
             self.assertEqual(3, len(mgr.extensions))
             for ext in mgr.extensions:
                 self.assertIn(ext.name, ['builder1', 'builder2', 'test'])
@@ -216,12 +243,11 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
             timestamp=agentbase.default_test_data.timestamp,
             resource_metadata=agentbase.default_test_data.resource_metadata)
 
-    @staticmethod
     @mock.patch('ceilometer.compute.pollsters.'
                 'BaseComputePollster.setup_environment',
                 mock.Mock(return_value=None))
-    def create_manager():
-        return manager.AgentManager()
+    def create_manager(self):
+        return manager.AgentManager(0, self.CONF)
 
     @staticmethod
     def setup_pipeline_file(pipeline):
@@ -239,12 +265,13 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
             self.notified_samples.append(m)
 
     def setUp(self):
+        self.conf = self.useFixture(fixture_config.Config()).conf
+        self.conf([])
         self.notified_samples = []
         self.notifier = mock.Mock()
         self.notifier.sample.side_effect = self.fake_notifier_sample
         self.useFixture(mockpatch.Patch('oslo_messaging.Notifier',
                                         return_value=self.notifier))
-        self.source_resources = True
         super(TestRunTasks, self).setUp()
         self.useFixture(mockpatch.Patch(
             'keystoneclient.v2_0.client.Client',
@@ -278,20 +305,21 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
         """Test for bug 1316532."""
         self.useFixture(mockpatch.Patch(
             'keystoneclient.v2_0.client.Client',
-            side_effect=ks_exceptions.ClientException))
+            side_effect=ka_exceptions.ClientException))
         self.pipeline_cfg = {
             'sources': [{
                 'name': "test_keystone",
                 'interval': 10,
                 'meters': ['testkeystone'],
-                'resources': ['test://'] if self.source_resources else [],
+                'resources': ['test://'],
                 'sinks': ['test_sink']}],
             'sinks': [{
                 'name': 'test_sink',
                 'transformers': [],
                 'publishers': ["test"]}]
         }
-        self.mgr.polling_manager = pipeline.PollingManager(self.pipeline_cfg)
+        self.mgr.polling_manager = pipeline.PollingManager(self.CONF,
+                                                           self.pipeline_cfg)
         polling_tasks = self.mgr.setup_polling_tasks()
         self.mgr.interval_task(list(polling_tasks.values())[0])
         self.assertFalse(self.PollsterKeystone.samples)
@@ -325,8 +353,8 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
                                   None,
                                   None,
                                   discovery.NodesDiscoveryTripleO())
-        self.mgr.discovery_manager = (extension.ExtensionManager
-                                      .make_test_instance([ext]))
+        self.mgr.discoveries = (extension.ExtensionManager
+                                .make_test_instance([ext]))
 
         self.pipeline_cfg = {
             'sources': [{
@@ -339,7 +367,8 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
                 'transformers': [],
                 'publishers': ["test"]}]
         }
-        self.mgr.polling_manager = pipeline.PollingManager(self.pipeline_cfg)
+        self.mgr.polling_manager = pipeline.PollingManager(self.CONF,
+                                                           self.pipeline_cfg)
         polling_tasks = self.mgr.setup_polling_tasks()
         self.mgr.interval_task(list(polling_tasks.values())[0])
         self.assertEqual(1, novalog.exception.call_count)
@@ -353,14 +382,15 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
                 'name': source_name,
                 'interval': 10,
                 'meters': ['testpollingexception'],
-                'resources': ['test://'] if self.source_resources else [],
+                'resources': ['test://'],
                 'sinks': ['test_sink']}],
             'sinks': [{
                 'name': 'test_sink',
                 'transformers': [],
                 'publishers': ["test"]}]
         }
-        self.mgr.polling_manager = pipeline.PollingManager(self.pipeline_cfg)
+        self.mgr.polling_manager = pipeline.PollingManager(self.CONF,
+                                                           self.pipeline_cfg)
         polling_task = list(self.mgr.setup_polling_tasks().values())[0]
         pollster = list(polling_task.pollster_matches[source_name])[0]
 
@@ -386,7 +416,9 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
         self._batching_samples(4, 1)
 
     def _batching_samples(self, expected_samples, call_count):
-        pipeline = yaml.dump({
+        self.useFixture(mockpatch.PatchObject(manager.utils, 'delayed',
+                                              side_effect=fakedelayed))
+        pipeline_cfg = {
             'sources': [{
                 'name': 'test_pipeline',
                 'interval': 1,
@@ -397,18 +429,13 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
                 'name': 'test_sink',
                 'transformers': [],
                 'publishers': ["test"]}]
-        })
+        }
 
-        pipeline_cfg_file = self.setup_pipeline_file(pipeline)
+        self.mgr.polling_manager = pipeline.PollingManager(self.CONF,
+                                                           pipeline_cfg)
+        polling_task = list(self.mgr.setup_polling_tasks().values())[0]
 
-        self.CONF.set_override("pipeline_cfg_file", pipeline_cfg_file)
-
-        self.mgr.tg = os_service.threadgroup.ThreadGroup(1000)
-        self.mgr.start()
-        # Manually executes callbacks
-        for timer in self.mgr.pollster_timers:
-            timer.f(*timer.args, **timer.kw)
-
+        self.mgr.interval_task(polling_task)
         samples = self.notified_samples
         self.assertEqual(expected_samples, len(samples))
         self.assertEqual(call_count, self.notifier.sample.call_count)
@@ -424,7 +451,7 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
                 'name': 'test_pipeline',
                 'interval': 1,
                 'meters': ['test'],
-                'resources': ['test://'] if self.source_resources else [],
+                'resources': ['test://'],
                 'sinks': ['test_sink']}],
             'sinks': [{
                 'name': 'test_sink',
@@ -435,8 +462,8 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
         pipeline_cfg_file = self.setup_pipeline_file(pipeline)
 
         self.CONF.set_override("pipeline_cfg_file", pipeline_cfg_file)
-        self.mgr.tg = os_service.threadgroup.ThreadGroup(1000)
-        self.mgr.start()
+        self.mgr.run()
+        self.addCleanup(self.mgr.terminate)
 
         # we only got the old name of meters
         for sample in self.notified_samples:
@@ -450,7 +477,7 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
                 'name': 'test_pipeline',
                 'interval': 1,
                 'meters': ['testanother'],
-                'resources': ['test://'] if self.source_resources else [],
+                'resources': ['test://'],
                 'sinks': ['test_sink']}],
             'sinks': [{
                 'name': 'test_sink',
@@ -460,7 +487,7 @@ class TestRunTasks(agentbase.BaseAgentManagerTestCase):
 
         updated_pipeline_cfg_file = self.setup_pipeline_file(pipeline)
 
-        # Move/re-name the updated pipeline file to the original pipeline
+        # Move/rename the updated pipeline file to the original pipeline
         # file path as recorded in oslo config
         shutil.move(updated_pipeline_cfg_file, pipeline_cfg_file)
 

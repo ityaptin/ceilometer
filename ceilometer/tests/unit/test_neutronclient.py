@@ -13,6 +13,8 @@
 # under the License.
 
 import mock
+
+from oslo_config import fixture as fixture_config
 from oslotest import base
 
 from ceilometer import neutron_client
@@ -22,7 +24,9 @@ class TestNeutronClient(base.BaseTestCase):
 
     def setUp(self):
         super(TestNeutronClient, self).setUp()
-        self.nc = neutron_client.Client()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
+        self.nc = neutron_client.Client(self.CONF)
+        self.nc.lb_version = 'v1'
 
     @staticmethod
     def fake_ports_list():
@@ -182,3 +186,9 @@ class TestNeutronClient(base.BaseTestCase):
         self.assertEqual(2, stats[0]['total_connections'])
         self.assertEqual(3, stats[0]['bytes_in'])
         self.assertEqual(4, stats[0]['bytes_out'])
+
+    def test_v1_list_loadbalancer_returns_empty_list(self):
+        self.assertEqual([], self.nc.list_loadbalancer())
+
+    def test_v1_list_listener_returns_empty_list(self):
+        self.assertEqual([], self.nc.list_listener())

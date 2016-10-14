@@ -142,7 +142,20 @@ class Connection(base.Connection):
         path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
                             '..', '..', 'storage', 'sqlalchemy',
                             'migrate_repo')
-        migration.db_sync(self._engine_facade.get_engine(), path)
+        engine = self._engine_facade.get_engine()
+
+        from migrate import exceptions as migrate_exc
+        from migrate.versioning import api
+        from migrate.versioning import repository
+
+        repo = repository.Repository(path)
+        try:
+            api.db_version(engine, repo)
+        except migrate_exc.DatabaseNotControlledError:
+            models.Base.metadata.create_all(engine)
+            api.version_control(engine, repo, repo.latest)
+        else:
+            migration.db_sync(engine, path)
 
     def clear(self):
         engine = self._engine_facade.get_engine()
@@ -155,14 +168,18 @@ class Connection(base.Connection):
 
         If not, we create it and return the record. This may result in a flush.
         """
-        if session is None:
-            session = self._engine_facade.get_session()
-        with session.begin(subtransactions=True):
-            et = session.query(models.EventType).filter(
-                models.EventType.desc == event_type).first()
-            if not et:
-                et = models.EventType(event_type)
-                session.add(et)
+        try:
+            if session is None:
+                session = self._engine_facade.get_session()
+            with session.begin(subtransactions=True):
+                et = session.query(models.EventType).filter(
+                    models.EventType.desc == event_type).first()
+                if not et:
+                    et = models.EventType(event_type)
+                    session.add(et)
+        except dbexc.DBDuplicateEntry:
+            et = self._get_or_create_event_type(event_type, session)
+
         return et
 
     def record_events(self, event_models):

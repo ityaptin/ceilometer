@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Copyright 2015 Reliance Jio Infocomm Ltd
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,19 +14,20 @@
 
 import collections
 
-from keystoneclient import exceptions
+from keystoneauth1 import exceptions
 import mock
+from oslo_config import fixture as fixture_config
 from oslotest import base
 from oslotest import mockpatch
 import testscenarios.testcase
 
 from ceilometer.agent import manager
 from ceilometer.objectstore import rgw
-from ceilometer.objectstore.rgw_client import RGWAdminClient as rgw_client
+from ceilometer.objectstore import rgw_client
 
-bucket_list1 = [rgw_client.Bucket('somefoo1', 10, 7)]
-bucket_list2 = [rgw_client.Bucket('somefoo2', 2, 9)]
-bucket_list3 = [rgw_client.Bucket('unlisted', 100, 100)]
+bucket_list1 = [rgw_client.RGWAdminClient.Bucket('somefoo1', 10, 7)]
+bucket_list2 = [rgw_client.RGWAdminClient.Bucket('somefoo2', 2, 9)]
+bucket_list3 = [rgw_client.RGWAdminClient.Bucket('unlisted', 100, 100)]
 
 GET_BUCKETS = [('tenant-000', {'num_buckets': 2, 'size': 1042,
                                'num_objects': 1001, 'buckets': bucket_list1}),
@@ -48,8 +47,8 @@ ASSIGNED_TENANTS = [Tenant('tenant-000'), Tenant('tenant-001')]
 
 class TestManager(manager.AgentManager):
 
-    def __init__(self):
-        super(TestManager, self).__init__()
+    def __init__(self, worker_id, conf):
+        super(TestManager, self).__init__(worker_id, conf)
         self._keystone = mock.Mock()
         self._catalog = (self._keystone.session.auth.get_access.
                          return_value.service_catalog)
@@ -89,8 +88,9 @@ class TestRgwPollster(testscenarios.testcase.WithScenarios,
     @mock.patch('ceilometer.pipeline.setup_pipeline', mock.MagicMock())
     def setUp(self):
         super(TestRgwPollster, self).setUp()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
         self.pollster = self.factory()
-        self.manager = TestManager()
+        self.manager = TestManager(0, self.CONF)
 
         if self.pollster.CACHE_KEY_METHOD == 'rgw.get_bucket':
             self.ACCOUNTS = GET_BUCKETS
@@ -121,7 +121,8 @@ class TestRgwPollster(testscenarios.testcase.WithScenarios,
 
         api_method = 'get_%s' % self.pollster.METHOD
 
-        with mockpatch.PatchObject(rgw_client, api_method, new=mock_method):
+        with mockpatch.PatchObject(rgw_client.RGWAdminClient,
+                                   api_method, new=mock_method):
             cache = {self.pollster.CACHE_KEY_METHOD: [self.ACCOUNTS[0]]}
             data = list(self.pollster._iter_accounts(mock.Mock(), cache,
                                                      ASSIGNED_TENANTS))
@@ -148,7 +149,8 @@ class TestRgwPollster(testscenarios.testcase.WithScenarios,
         mock_method = mock.MagicMock()
         endpoint = 'http://127.0.0.1:8000/admin'
         api_method = 'get_%s' % self.pollster.METHOD
-        with mockpatch.PatchObject(rgw_client, api_method, new=mock_method):
+        with mockpatch.PatchObject(rgw_client.RGWAdminClient,
+                                   api_method, new=mock_method):
             with mockpatch.PatchObject(
                     self.manager._catalog, 'url_for',
                     return_value=endpoint):
@@ -162,7 +164,7 @@ class TestRgwPollster(testscenarios.testcase.WithScenarios,
         mock_url_for = mock.MagicMock()
         mock_url_for.return_value = '/endpoint'
         api_method = 'get_%s' % self.pollster.METHOD
-        with mockpatch.PatchObject(rgw_client, api_method,
+        with mockpatch.PatchObject(rgw_client.RGWAdminClient, api_method,
                                    new=mock.MagicMock()):
             with mockpatch.PatchObject(
                     self.manager._catalog, 'url_for',

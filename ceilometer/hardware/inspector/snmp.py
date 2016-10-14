@@ -2,10 +2,6 @@
 # Copyright 2014 ZHAW SoE
 # Copyright 2014 Intel Corp
 #
-# Authors: Lucas Graf <graflu0@students.zhaw.ch>
-#          Toni Zehnder <zehndton@students.zhaw.ch>
-#          Lianhao Lu <lianhao.lu@intel.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -20,11 +16,17 @@
 """Inspector for collecting data over SNMP"""
 
 import copy
-from pysnmp.entity.rfc3413.oneliner import cmdgen
 
+from oslo_log import log
+from pysnmp.entity.rfc3413.oneliner import cmdgen
+from pysnmp.proto import rfc1905
 import six
+import six.moves.urllib.parse as urlparse
 
 from ceilometer.hardware.inspector import base
+
+
+LOG = log.getLogger(__name__)
 
 
 class SNMPException(Exception):
@@ -60,6 +62,22 @@ def parse_snmp_return(ret, is_bulk=False):
 EXACT = 'type_exact'
 PREFIX = 'type_prefix'
 
+_auth_proto_mapping = {
+    'md5': cmdgen.usmHMACMD5AuthProtocol,
+    'sha': cmdgen.usmHMACSHAAuthProtocol,
+}
+_priv_proto_mapping = {
+    'des': cmdgen.usmDESPrivProtocol,
+    'aes128': cmdgen.usmAesCfb128Protocol,
+    '3des': cmdgen.usm3DESEDEPrivProtocol,
+    'aes192': cmdgen.usmAesCfb192Protocol,
+    'aes256': cmdgen.usmAesCfb256Protocol,
+}
+_usm_proto_mapping = {
+    'auth_proto': ('authProtocol', _auth_proto_mapping),
+    'priv_proto': ('privProtocol', _priv_proto_mapping),
+}
+
 
 class SNMPInspector(base.Inspector):
     # Default port
@@ -94,9 +112,9 @@ class SNMPInspector(base.Inspector):
      GetRequest for oids of 'metadata'.
 
      For matching_type of PREFIX, SNMP request GetBulkRequest
-     would be send to get values for oids of 'metric_oid' and
+     would be sent to get values for oids of 'metric_oid' and
      'metadata' of each item in the above mapping. And each item might
-     return multiple (value, metadata, extra) tuple, e.g.
+     return multiple (value, metadata, extra) tuples, e.g.
      Suppose we have the following mapping:
      MAPPING = {
       'disk.size.total': {
@@ -128,29 +146,21 @@ class SNMPInspector(base.Inspector):
          extra.update('project_id': xy, 'user_id': zw)
     """
 
-    def __init__(self):
-        super(SNMPInspector, self).__init__()
-        self._cmdGen = cmdgen.CommandGenerator()
-
     def _query_oids(self, host, oids, cache, is_bulk):
-        # send GetRequest or GetBulkRequest to get oid values and
+        # send GetRequest or GetBulkRequest to get oids values and
         # populate the values into cache
         authData = self._get_auth_strategy(host)
         transport = cmdgen.UdpTransportTarget((host.hostname,
                                                host.port or self._port))
         oid_cache = cache.setdefault(self._CACHE_KEY_OID, {})
 
+        cmd_runner = cmdgen.CommandGenerator()
         if is_bulk:
-            ret = self._cmdGen.bulkCmd(authData,
-                                       transport,
-                                       0, 100,
-                                       *oids,
-                                       lookupValues=True)
+            ret = cmd_runner.bulkCmd(authData, transport, 0, 100, *oids,
+                                     lookupValues=True)
         else:
-            ret = self._cmdGen.getCmd(authData,
-                                      transport,
-                                      *oids,
-                                      lookupValues=True)
+            ret = cmd_runner.getCmd(authData, transport, *oids,
+                                    lookupValues=True)
         (error, data) = parse_snmp_return(ret, is_bulk)
         if error:
             raise SNMPException("An error occurred, oids %(oid)s, "
@@ -162,10 +172,10 @@ class SNMPInspector(base.Inspector):
         if is_bulk:
             for var_bind_table_row in data:
                 for name, val in var_bind_table_row:
-                    oid_cache[name.prettyPrint()] = val
+                    oid_cache[str(name)] = val
         else:
             for name, val in data:
-                oid_cache[name.prettyPrint()] = val
+                oid_cache[str(name)] = val
 
     @staticmethod
     def find_matching_oids(oid_cache, oid, match_type, find_one=True):
@@ -182,18 +192,24 @@ class SNMPInspector(base.Inspector):
         return matched
 
     @staticmethod
-    def get_oid_value(oid_cache, oid_def, suffix=''):
+    def get_oid_value(oid_cache, oid_def, suffix='', host=None):
         oid, converter = oid_def
         value = oid_cache[oid + suffix]
         if converter:
-            value = converter(value)
+            try:
+                value = converter(value)
+            except ValueError:
+                if isinstance(value, rfc1905.NoSuchObject):
+                    LOG.debug("OID %s%s has no value" % (
+                        oid, " on %s" % host.hostname if host else ""))
+                    return None
         return value
 
     @classmethod
-    def construct_metadata(cls, oid_cache, meta_defs, suffix=''):
+    def construct_metadata(cls, oid_cache, meta_defs, suffix='', host=None):
         metadata = {}
         for key, oid_def in six.iteritems(meta_defs):
-            metadata[key] = cls.get_oid_value(oid_cache, oid_def, suffix)
+            metadata[key] = cls.get_oid_value(oid_cache, oid_def, suffix, host)
         return metadata
 
     @classmethod
@@ -238,11 +254,11 @@ class SNMPInspector(base.Inspector):
             suffix = oid[len(meter_def['metric_oid'][0]):]
             value = self.get_oid_value(oid_cache,
                                        meter_def['metric_oid'],
-                                       suffix)
+                                       suffix, host)
             # get the metadata for this sample value
             metadata = self.construct_metadata(oid_cache,
                                                meter_def['metadata'],
-                                               suffix)
+                                               suffix, host)
             extra_metadata = copy.deepcopy(input_extra_metadata) or {}
             # call post_op for special cases
             if meter_def['post_op']:
@@ -295,9 +311,24 @@ class SNMPInspector(base.Inspector):
 
     @staticmethod
     def _get_auth_strategy(host):
+        options = urlparse.parse_qs(host.query)
+        kwargs = {}
+
+        for key in _usm_proto_mapping:
+            opt = options.get(key, [None])[-1]
+            value = _usm_proto_mapping[key][1].get(opt)
+            if value:
+                kwargs[_usm_proto_mapping[key][0]] = value
+
+        priv_pass = options.get('priv_password', [None])[-1]
+        if priv_pass:
+            kwargs['privKey'] = priv_pass
         if host.password:
+            kwargs['authKey'] = host.password
+
+        if kwargs:
             auth_strategy = cmdgen.UsmUserData(host.username,
-                                               authKey=host.password)
+                                               **kwargs)
         else:
             auth_strategy = cmdgen.CommunityData(host.username or 'public')
         return auth_strategy

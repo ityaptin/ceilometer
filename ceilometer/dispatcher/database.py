@@ -13,20 +13,19 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+from debtcollector import removals
 from oslo_log import log
 from oslo_utils import timeutils
 
 from ceilometer import dispatcher
 from ceilometer.event.storage import models
-from ceilometer.i18n import _LE, _LW
-from ceilometer.publisher import utils as publisher_utils
+from ceilometer.i18n import _LE
 from ceilometer import storage
 
 LOG = log.getLogger(__name__)
 
 
-class DatabaseDispatcher(dispatcher.MeterDispatcherBase,
-                         dispatcher.EventDispatcherBase):
+class DatabaseDispatcher(dispatcher.Base):
     """Dispatcher class for recording metering data into database.
 
     The dispatcher class which records each meter into a database configured
@@ -40,38 +39,22 @@ class DatabaseDispatcher(dispatcher.MeterDispatcherBase,
     event_dispatchers = database
     """
 
-    def __init__(self, conf):
-        super(DatabaseDispatcher, self).__init__(conf)
-
-        self._meter_conn = self._get_db_conn('metering', True)
-        self._event_conn = self._get_db_conn('event', True)
-
-    def _get_db_conn(self, purpose, ignore_exception=False):
-        try:
-            return storage.get_connection_from_config(self.conf, purpose)
-        except Exception as err:
-            params = {"purpose": purpose, "err": err}
-            LOG.exception(_LE("Failed to connect to db, purpose %(purpose)s "
-                              "re-try later: %(err)s") % params)
-            if not ignore_exception:
-                raise
-
     @property
-    def meter_conn(self):
-        if not self._meter_conn:
-            self._meter_conn = self._get_db_conn('metering')
+    def conn(self):
+        if not hasattr(self, "_conn"):
+            self._conn = storage.get_connection_from_config(
+                self.conf, self.CONNECTION_TYPE)
+        return self._conn
 
-        return self._meter_conn
 
-    @property
-    def event_conn(self):
-        if not self._event_conn:
-            self._event_conn = self._get_db_conn('event')
-
-        return self._event_conn
+class MeterDatabaseDispatcher(dispatcher.MeterDispatcherBase,
+                              DatabaseDispatcher):
+    CONNECTION_TYPE = 'metering'
 
     def record_metering_data(self, data):
         # We may have receive only one counter on the wire
+        if not data:
+            return
         if not isinstance(data, list):
             data = [data]
 
@@ -83,25 +66,26 @@ class DatabaseDispatcher(dispatcher.MeterDispatcherBase,
                  'resource_id': meter['resource_id'],
                  'timestamp': meter.get('timestamp', 'NO TIMESTAMP'),
                  'counter_volume': meter['counter_volume']})
-            if publisher_utils.verify_signature(
-                    meter, self.conf.publisher.telemetry_secret):
-                try:
-                    # Convert the timestamp to a datetime instance.
-                    # Storage engines are responsible for converting
-                    # that value to something they can store.
-                    if meter.get('timestamp'):
-                        ts = timeutils.parse_isotime(meter['timestamp'])
-                        meter['timestamp'] = timeutils.normalize_time(ts)
-                    self.meter_conn.record_metering_data(meter)
-                except Exception as err:
-                    LOG.exception(_LE('Failed to record metering data: %s'),
-                                  err)
-                    # raise the exception to propagate it up in the chain.
-                    raise
-            else:
-                LOG.warning(_LW(
-                    'message signature invalid, discarding message: %r'),
-                    meter)
+            # Convert the timestamp to a datetime instance.
+            # Storage engines are responsible for converting
+            # that value to something they can store.
+            if meter.get('timestamp'):
+                ts = timeutils.parse_isotime(meter['timestamp'])
+                meter['timestamp'] = timeutils.normalize_time(ts)
+        try:
+            self.conn.record_metering_data_batch(data)
+        except Exception as err:
+            LOG.error(_LE('Failed to record %(len)s: %(err)s.'),
+                      {'len': len(data), 'err': err})
+            raise
+
+
+@removals.removed_class("EventDatabaseDispatcher",
+                        message="Use panko instead",
+                        removal_version="8.0.0")
+class EventDatabaseDispatcher(dispatcher.EventDispatcherBase,
+                              DatabaseDispatcher):
+    CONNECTION_TYPE = 'event'
 
     def record_events(self, events):
         if not isinstance(events, list):
@@ -109,25 +93,20 @@ class DatabaseDispatcher(dispatcher.MeterDispatcherBase,
 
         event_list = []
         for ev in events:
-            if publisher_utils.verify_signature(
-                    ev, self.conf.publisher.telemetry_secret):
-                try:
-                    event_list.append(
-                        models.Event(
-                            message_id=ev['message_id'],
-                            event_type=ev['event_type'],
-                            generated=timeutils.normalize_time(
-                                timeutils.parse_isotime(ev['generated'])),
-                            traits=[models.Trait(
-                                    name, dtype,
-                                    models.Trait.convert_value(dtype, value))
-                                    for name, dtype, value in ev['traits']],
-                            raw=ev.get('raw', {}))
-                    )
-                except Exception:
-                    LOG.exception(_LE("Error processing event and it will be "
-                                      "dropped: %s"), ev)
-            else:
-                LOG.warning(_LW(
-                    'event signature invalid, discarding event: %s'), ev)
-        self.event_conn.record_events(event_list)
+            try:
+                event_list.append(
+                    models.Event(
+                        message_id=ev['message_id'],
+                        event_type=ev['event_type'],
+                        generated=timeutils.normalize_time(
+                            timeutils.parse_isotime(ev['generated'])),
+                        traits=[models.Trait(
+                                name, dtype,
+                                models.Trait.convert_value(dtype, value))
+                                for name, dtype, value in ev['traits']],
+                        raw=ev.get('raw', {}))
+                )
+            except Exception:
+                LOG.exception(_LE("Error processing event and it will be "
+                                  "dropped: %s"), ev)
+        self.conn.record_events(event_list)

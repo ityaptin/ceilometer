@@ -15,6 +15,7 @@
 
 from oslo_config import cfg
 from oslo_utils import units
+import six.moves.urllib.parse as urlparse
 try:
     import XenAPI as api
 except ImportError:
@@ -48,6 +49,18 @@ class XenapiException(virt_inspector.InspectorException):
     pass
 
 
+def swap_xapi_host(url, host_addr):
+    """Replace the XenServer address present in 'url' with 'host_addr'."""
+    temp_url = urlparse.urlparse(url)
+    # The connection URL is served by XAPI and doesn't support having a
+    # path for the connection url after the port. And username/password
+    # will be pass separately. So the URL like "http://abc:abc@abc:433/abc"
+    # should not appear for XAPI case.
+    temp_netloc = temp_url.netloc.replace(temp_url.hostname, '%s' % host_addr)
+    replaced = temp_url._replace(netloc=temp_netloc)
+    return urlparse.urlunparse(replaced)
+
+
 def get_api_session():
     if not api:
         raise ImportError(_('XenAPI not installed'))
@@ -64,8 +77,18 @@ def get_api_session():
                    else api.Session(url))
         session.login_with_password(username, password)
     except api.Failure as e:
-        msg = _("Could not connect to XenAPI: %s") % e.details[0]
-        raise XenapiException(msg)
+        if e.details[0] == 'HOST_IS_SLAVE':
+            master = e.details[1]
+            url = swap_xapi_host(url, master)
+            try:
+                session = api.Session(url)
+                session.login_with_password(username, password)
+            except api.Failure as es:
+                raise XenapiException(_('Could not connect slave host: %s ') %
+                                      es.details[0])
+        else:
+            msg = _("Could not connect to XenAPI: %s") % e.details[0]
+            raise XenapiException(msg)
     return session
 
 
@@ -97,30 +120,38 @@ class XenapiInspector(virt_inspector.Inspector):
     def inspect_cpu_util(self, instance, duration=None):
         instance_name = util.instance_name(instance)
         vm_ref = self._lookup_by_name(instance_name)
-        metrics_ref = self._call_xenapi("VM.get_metrics", vm_ref)
-        metrics_rec = self._call_xenapi("VM_metrics.get_record",
-                                        metrics_ref)
-        vcpus_number = metrics_rec['VCPUs_number']
-        vcpus_utils = metrics_rec['VCPUs_utilisation']
-        if len(vcpus_utils) == 0:
-            msg = _("Could not get VM %s CPU Utilization") % instance_name
+        vcpus_number = int(self._call_xenapi("VM.get_VCPUs_max", vm_ref))
+        if vcpus_number <= 0:
+            msg = _("Could not get VM %s CPU number") % instance_name
             raise XenapiException(msg)
-
         utils = 0.0
-        for num in range(int(vcpus_number)):
-            utils += vcpus_utils.get(str(num))
+        for index in range(vcpus_number):
+            utils += float(self._call_xenapi("VM.query_data_source",
+                                             vm_ref,
+                                             "cpu%d" % index))
         utils = utils / int(vcpus_number) * 100
         return virt_inspector.CPUUtilStats(util=utils)
 
     def inspect_memory_usage(self, instance, duration=None):
         instance_name = util.instance_name(instance)
         vm_ref = self._lookup_by_name(instance_name)
-        metrics_ref = self._call_xenapi("VM.get_metrics", vm_ref)
-        metrics_rec = self._call_xenapi("VM_metrics.get_record",
-                                        metrics_ref)
-        # Stat provided from XenServer is in B, converting it to MB.
-        memory = int(metrics_rec['memory_actual']) / units.Mi
-        return virt_inspector.MemoryUsageStats(usage=memory)
+        total_mem = float(self._call_xenapi("VM.query_data_source",
+                                            vm_ref,
+                                            "memory"))
+        try:
+            free_mem = float(self._call_xenapi("VM.query_data_source",
+                                               vm_ref,
+                                               "memory_internal_free"))
+        except api.Failure:
+            # If PV tools is not installed in the guest instance, it's
+            # impossible to get free memory. So give it a default value
+            # as 0.
+            free_mem = 0
+        # memory provided from XenServer is in Bytes;
+        # memory_internal_free provided from XenServer is in KB,
+        # converting it to MB.
+        memory_usage = (total_mem - free_mem * units.Ki) / units.Mi
+        return virt_inspector.MemoryUsageStats(usage=memory_usage)
 
     def inspect_vnic_rates(self, instance, duration=None):
         instance_name = util.instance_name(instance)
@@ -129,18 +160,19 @@ class XenapiInspector(virt_inspector.Inspector):
         if vif_refs:
             for vif_ref in vif_refs:
                 vif_rec = self._call_xenapi("VIF.get_record", vif_ref)
-                vif_metrics_ref = self._call_xenapi(
-                    "VIF.get_metrics", vif_ref)
-                vif_metrics_rec = self._call_xenapi(
-                    "VIF_metrics.get_record", vif_metrics_ref)
+
+                rx_rate = float(self._call_xenapi(
+                    "VM.query_data_source", vm_ref,
+                    "vif_%s_rx" % vif_rec['device']))
+                tx_rate = float(self._call_xenapi(
+                    "VM.query_data_source", vm_ref,
+                    "vif_%s_tx" % vif_rec['device']))
 
                 interface = virt_inspector.Interface(
                     name=vif_rec['uuid'],
                     mac=vif_rec['MAC'],
                     fref=None,
                     parameters=None)
-                rx_rate = float(vif_metrics_rec['io_read_kbs']) * units.Ki
-                tx_rate = float(vif_metrics_rec['io_write_kbs']) * units.Ki
                 stats = virt_inspector.InterfaceRateStats(rx_rate, tx_rate)
                 yield (interface, stats)
 
@@ -151,16 +183,14 @@ class XenapiInspector(virt_inspector.Inspector):
         if vbd_refs:
             for vbd_ref in vbd_refs:
                 vbd_rec = self._call_xenapi("VBD.get_record", vbd_ref)
-                vbd_metrics_ref = self._call_xenapi("VBD.get_metrics",
-                                                    vbd_ref)
-                vbd_metrics_rec = self._call_xenapi("VBD_metrics.get_record",
-                                                    vbd_metrics_ref)
 
                 disk = virt_inspector.Disk(device=vbd_rec['device'])
-                # Stats provided from XenServer are in KB/s,
-                # converting it to B/s.
-                read_rate = float(vbd_metrics_rec['io_read_kbs']) * units.Ki
-                write_rate = float(vbd_metrics_rec['io_write_kbs']) * units.Ki
+                read_rate = float(self._call_xenapi(
+                    "VM.query_data_source", vm_ref,
+                    "vbd_%s_read" % vbd_rec['device']))
+                write_rate = float(self._call_xenapi(
+                    "VM.query_data_source", vm_ref,
+                    "vbd_%s_write" % vbd_rec['device']))
                 disk_rate_info = virt_inspector.DiskRateStats(
                     read_bytes_rate=read_rate,
                     read_requests_rate=0,

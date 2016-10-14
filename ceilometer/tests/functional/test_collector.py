@@ -17,7 +17,6 @@ import socket
 import mock
 import msgpack
 from oslo_config import fixture as fixture_config
-from oslo_context import context
 import oslo_messaging
 from oslo_utils import timeutils
 from oslotest import mockpatch
@@ -25,7 +24,6 @@ from stevedore import extension
 
 from ceilometer import collector
 from ceilometer import dispatcher
-from ceilometer import messaging
 from ceilometer.publisher import utils
 from ceilometer import sample
 from ceilometer.tests import base as tests_base
@@ -50,17 +48,18 @@ class TestCollector(tests_base.BaseTestCase):
                                group='publisher')
         self._setup_messaging()
 
-        self.counter = sample.Sample(
-            name='foobar',
-            type='bad',
-            unit='F',
-            volume=1,
-            user_id='jd',
-            project_id='ceilometer',
-            resource_id='cat',
-            timestamp=timeutils.utcnow().isoformat(),
-            resource_metadata={},
-        ).as_dict()
+        self.sample = utils.meter_message_from_counter(
+            sample.Sample(
+                name='foobar',
+                type='bad',
+                unit='F',
+                volume=1,
+                user_id='jd',
+                project_id='ceilometer',
+                resource_id='cat',
+                timestamp=timeutils.utcnow().isoformat(),
+                resource_metadata={},
+            ), self.CONF.publisher.telemetry_secret)
 
         self.utf8_msg = utils.meter_message_from_counter(
             sample.Sample(
@@ -77,15 +76,8 @@ class TestCollector(tests_base.BaseTestCase):
             ),
             'not-so-secret')
 
-        self.srv = collector.CollectorService()
-
-        self.useFixture(mockpatch.PatchObject(
-            self.srv.tg, 'add_thread',
-            side_effect=self._dummy_thread_group_add_thread))
-
-    @staticmethod
-    def _dummy_thread_group_add_thread(method):
-        method()
+        self.mock_dispatcher = self._setup_fake_dispatcher()
+        self.srv = collector.CollectorService(0, self.CONF)
 
     def _setup_messaging(self, enabled=True):
         if enabled:
@@ -108,7 +100,7 @@ class TestCollector(tests_base.BaseTestCase):
     def _make_fake_socket(self, sample):
         def recvfrom(size):
             # Make the loop stop
-            self.srv.stop()
+            self.srv.udp_run = False
             return msgpack.dumps(sample), ('127.0.0.1', 12345)
 
         sock = mock.Mock()
@@ -117,191 +109,135 @@ class TestCollector(tests_base.BaseTestCase):
 
     def _verify_udp_socket(self, udp_socket):
         conf = self.CONF.collector
-        udp_socket.setsockopt.assert_called_once_with(socket.SOL_SOCKET,
-                                                      socket.SO_REUSEADDR, 1)
+        setsocketopt_calls = [mock.call.setsockopt(socket.SOL_SOCKET,
+                                                   socket.SO_REUSEADDR, 1),
+                              mock.call.setsockopt(socket.SOL_SOCKET,
+                                                   socket.SO_REUSEPORT, 1)]
+        udp_socket.setsockopt.assert_has_calls(setsocketopt_calls)
         udp_socket.bind.assert_called_once_with((conf.udp_address,
                                                  conf.udp_port))
 
-    def test_record_metering_data(self):
-        mock_dispatcher = self._setup_fake_dispatcher()
-        dps = dispatcher.load_dispatcher_manager()
-        (self.srv.meter_manager, self.srv.manager) = dps
-        self.srv.record_metering_data(None, self.counter)
-        mock_dispatcher.record_metering_data.assert_called_once_with(
-            data=self.counter)
-
     def test_udp_receive_base(self):
         self._setup_messaging(False)
-        mock_dispatcher = self._setup_fake_dispatcher()
-        self.counter['source'] = 'mysource'
-        self.counter['counter_name'] = self.counter['name']
-        self.counter['counter_volume'] = self.counter['volume']
-        self.counter['counter_type'] = self.counter['type']
-        self.counter['counter_unit'] = self.counter['unit']
 
-        udp_socket = self._make_fake_socket(self.counter)
+        udp_socket = self._make_fake_socket(self.sample)
 
-        with mock.patch('socket.socket') as mock_socket:
-            mock_socket.return_value = udp_socket
-            self.srv.start()
-            mock_socket.assert_called_with(socket.AF_INET, socket.SOCK_DGRAM)
+        with mock.patch('select.select', return_value=([udp_socket], [], [])):
+            with mock.patch('socket.socket') as mock_socket:
+                mock_socket.return_value = udp_socket
+                self.srv.run()
+                self.addCleanup(self.srv.terminate)
+                self.srv.udp_thread.join(5)
+                self.assertFalse(self.srv.udp_thread.is_alive())
+                mock_socket.assert_called_with(socket.AF_INET,
+                                               socket.SOCK_DGRAM)
 
         self._verify_udp_socket(udp_socket)
-
-        mock_dispatcher.record_metering_data.assert_called_once_with(
-            self.counter)
+        mock_record = self.mock_dispatcher.record_metering_data
+        mock_record.assert_called_once_with(self.sample)
 
     def test_udp_socket_ipv6(self):
         self._setup_messaging(False)
         self.CONF.set_override('udp_address', '::1', group='collector')
-        self._setup_fake_dispatcher()
-        sock = self._make_fake_socket('data')
+        sock = self._make_fake_socket(self.sample)
 
-        with mock.patch.object(socket, 'socket') as mock_socket:
-            mock_socket.return_value = sock
-            self.srv.start()
-            mock_socket.assert_called_with(socket.AF_INET6, socket.SOCK_DGRAM)
+        with mock.patch('select.select', return_value=([sock], [], [])):
+            with mock.patch.object(socket, 'socket') as mock_socket:
+                mock_socket.return_value = sock
+                self.srv.run()
+                self.addCleanup(self.srv.terminate)
+                self.srv.udp_thread.join(5)
+                self.assertFalse(self.srv.udp_thread.is_alive())
+                mock_socket.assert_called_with(socket.AF_INET6,
+                                               socket.SOCK_DGRAM)
 
     def test_udp_receive_storage_error(self):
         self._setup_messaging(False)
-        mock_dispatcher = self._setup_fake_dispatcher()
-        mock_dispatcher.record_metering_data.side_effect = self._raise_error
+        mock_record = self.mock_dispatcher.record_metering_data
+        mock_record.side_effect = self._raise_error
 
-        self.counter['source'] = 'mysource'
-        self.counter['counter_name'] = self.counter['name']
-        self.counter['counter_volume'] = self.counter['volume']
-        self.counter['counter_type'] = self.counter['type']
-        self.counter['counter_unit'] = self.counter['unit']
-
-        udp_socket = self._make_fake_socket(self.counter)
-        with mock.patch('socket.socket', return_value=udp_socket):
-            self.srv.start()
+        udp_socket = self._make_fake_socket(self.sample)
+        with mock.patch('select.select', return_value=([udp_socket], [], [])):
+            with mock.patch('socket.socket', return_value=udp_socket):
+                self.srv.run()
+                self.addCleanup(self.srv.terminate)
+                self.srv.udp_thread.join(5)
+                self.assertFalse(self.srv.udp_thread.is_alive())
 
         self._verify_udp_socket(udp_socket)
 
-        mock_dispatcher.record_metering_data.assert_called_once_with(
-            self.counter)
+        mock_record.assert_called_once_with(self.sample)
 
     @staticmethod
     def _raise_error(*args, **kwargs):
         raise Exception
 
-    def test_udp_receive_bad_decoding(self):
+    @mock.patch.object(collector, 'LOG')
+    def test_udp_receive_bad_decoding(self, log):
         self._setup_messaging(False)
-        self._setup_fake_dispatcher()
-        udp_socket = self._make_fake_socket(self.counter)
-        with mock.patch('socket.socket', return_value=udp_socket):
-            with mock.patch('msgpack.loads', self._raise_error):
-                self.srv.start()
+        udp_socket = self._make_fake_socket(self.sample)
+        with mock.patch('select.select', return_value=([udp_socket], [], [])):
+            with mock.patch('socket.socket', return_value=udp_socket):
+                with mock.patch('msgpack.loads', self._raise_error):
+                    self.srv.run()
+                    self.addCleanup(self.srv.terminate)
+                    self.srv.udp_thread.join(5)
+                    self.assertFalse(self.srv.udp_thread.is_alive())
 
         self._verify_udp_socket(udp_socket)
+        log.warning.assert_called_once_with(
+            "UDP: Cannot decode data sent by %s", mock.ANY)
 
-    @mock.patch.object(oslo_messaging.MessageHandlingServer, 'start')
     @mock.patch.object(collector.CollectorService, 'start_udp')
-    def test_only_udp(self, udp_start, rpc_start):
+    def test_only_udp(self, udp_start):
         """Check that only UDP is started if messaging transport is unset."""
         self._setup_messaging(False)
-        self._setup_fake_dispatcher()
-        udp_socket = self._make_fake_socket(self.counter)
-        with mock.patch('socket.socket', return_value=udp_socket):
-            self.srv.start()
-            self.assertEqual(0, rpc_start.call_count)
-            self.assertEqual(1, udp_start.call_count)
-
-    @mock.patch.object(oslo_messaging.MessageHandlingServer, 'start')
-    @mock.patch.object(collector.CollectorService, 'start_udp')
-    def test_only_rpc(self, udp_start, rpc_start):
-        """Check that only RPC is started if udp_address is empty."""
-        self.CONF.set_override('enable_rpc', True, group='collector')
-        self.CONF.set_override('udp_address', '', group='collector')
-        self._setup_fake_dispatcher()
-        self.srv.start()
-        # two calls because two servers (notification and rpc)
-        self.assertEqual(2, rpc_start.call_count)
-        self.assertEqual(0, udp_start.call_count)
+        udp_socket = self._make_fake_socket(self.sample)
+        real_start = oslo_messaging.MessageHandlingServer.start
+        with mock.patch.object(oslo_messaging.MessageHandlingServer,
+                               'start', side_effect=real_start) as rpc_start:
+            with mock.patch('socket.socket', return_value=udp_socket):
+                self.srv.run()
+                self.addCleanup(self.srv.terminate)
+                self.srv.udp_thread.join(5)
+                self.assertFalse(self.srv.udp_thread.is_alive())
+                self.assertEqual(0, rpc_start.call_count)
+                self.assertEqual(1, udp_start.call_count)
 
     def test_udp_receive_valid_encoding(self):
         self._setup_messaging(False)
-        mock_dispatcher = self._setup_fake_dispatcher()
         self.data_sent = []
-        with mock.patch('socket.socket',
-                        return_value=self._make_fake_socket(self.utf8_msg)):
-            self.srv.start()
-            self.assertTrue(utils.verify_signature(
-                mock_dispatcher.method_calls[0][1][0],
-                "not-so-secret"))
+        sock = self._make_fake_socket(self.utf8_msg)
+        with mock.patch('select.select', return_value=([sock], [], [])):
+            with mock.patch('socket.socket', return_value=sock):
+                self.srv.run()
+                self.addCleanup(self.srv.terminate)
+                self.srv.udp_thread.join(5)
+                self.assertFalse(self.srv.udp_thread.is_alive())
+                self.assertTrue(utils.verify_signature(
+                    self.mock_dispatcher.method_calls[0][1][0],
+                    "not-so-secret"))
 
-    @mock.patch('ceilometer.storage.impl_log.LOG')
-    def test_collector_no_mock(self, mylog):
-        self.CONF.set_override('enable_rpc', True, group='collector')
-        self.CONF.set_override('udp_address', '', group='collector')
-        mylog.info.side_effect = lambda *args: self.srv.stop()
-        self.srv.start()
+    def _test_collector_requeue(self, listener, batch_listener=False):
 
-        client = messaging.get_rpc_client(self.transport, version='1.0')
-        cclient = client.prepare(topic='metering')
-        cclient.cast(context.RequestContext(),
-                     'record_metering_data', data=[self.utf8_msg])
-        self.srv.rpc_server.wait()
-        mylog.info.assert_called_once_with(
-            'metering data test for test_run_tasks: 1')
-
-    def _test_collector_requeue(self, listener):
-
-        mock_dispatcher = self._setup_fake_dispatcher()
         self.srv.dispatcher_manager = dispatcher.load_dispatcher_manager()
-        mock_dispatcher.record_metering_data.side_effect = Exception('boom')
-        mock_dispatcher.record_events.side_effect = Exception('boom')
+        mock_record = self.mock_dispatcher.record_metering_data
+        mock_record.side_effect = Exception('boom')
+        self.mock_dispatcher.record_events.side_effect = Exception('boom')
 
-        self.srv.start()
+        self.srv.run()
+        self.addCleanup(self.srv.terminate)
         endp = getattr(self.srv, listener).dispatcher.endpoints[0]
-        ret = endp.sample({}, 'pub_id', 'event', {}, {})
+        ret = endp.sample([{'ctxt': {}, 'publisher_id': 'pub_id',
+                            'event_type': 'event', 'payload': {},
+                            'metadata': {}}])
         self.assertEqual(oslo_messaging.NotificationResult.REQUEUE,
                          ret)
 
-    @mock.patch.object(oslo_messaging.MessageHandlingServer, 'start',
-                       mock.Mock())
     @mock.patch.object(collector.CollectorService, 'start_udp', mock.Mock())
     def test_collector_sample_requeue(self):
-        self.CONF.set_override('requeue_sample_on_dispatcher_error', True,
-                               group='collector')
         self._test_collector_requeue('sample_listener')
 
-    @mock.patch.object(oslo_messaging.MessageHandlingServer, 'start',
-                       mock.Mock())
     @mock.patch.object(collector.CollectorService, 'start_udp', mock.Mock())
     def test_collector_event_requeue(self):
-        self.CONF.set_override('requeue_event_on_dispatcher_error', True,
-                               group='collector')
-        self.CONF.set_override('store_events', True, group='notification')
         self._test_collector_requeue('event_listener')
-
-    def _test_collector_no_requeue(self, listener):
-        mock_dispatcher = self._setup_fake_dispatcher()
-        self.srv.dispatcher_manager = dispatcher.load_dispatcher_manager()
-        mock_dispatcher.record_metering_data.side_effect = (FakeException
-                                                            ('boom'))
-        mock_dispatcher.record_events.side_effect = (FakeException
-                                                     ('boom'))
-
-        self.srv.start()
-        endp = getattr(self.srv, listener).dispatcher.endpoints[0]
-        self.assertRaises(FakeException, endp.sample, {}, 'pub_id',
-                          'event', {}, {})
-
-    @mock.patch.object(oslo_messaging.MessageHandlingServer, 'start',
-                       mock.Mock())
-    @mock.patch.object(collector.CollectorService, 'start_udp', mock.Mock())
-    def test_collector_sample_no_requeue(self):
-        self.CONF.set_override('requeue_sample_on_dispatcher_error', False,
-                               group='collector')
-        self._test_collector_no_requeue('sample_listener')
-
-    @mock.patch.object(oslo_messaging.MessageHandlingServer, 'start',
-                       mock.Mock())
-    @mock.patch.object(collector.CollectorService, 'start_udp', mock.Mock())
-    def test_collector_event_no_requeue(self):
-        self.CONF.set_override('requeue_event_on_dispatcher_error', False,
-                               group='collector')
-        self.CONF.set_override('store_events', True, group='notification')
-        self._test_collector_no_requeue('event_listener')

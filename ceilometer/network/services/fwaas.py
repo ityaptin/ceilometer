@@ -14,7 +14,6 @@
 # under the License.
 
 from oslo_log import log
-from oslo_utils import timeutils
 
 from ceilometer.i18n import _
 from ceilometer.network.services import base
@@ -45,9 +44,9 @@ class FirewallPollster(base.BaseServicesPollster):
             status = self.get_status_id(fw['status'])
             if status == -1:
                 # unknown status, skip this sample
-                LOG.warn(_("Unknown status %(stat)s received on fw %(id)s,"
-                           "skipping sample") % {'stat': fw['status'],
-                                                 'id': fw['id']})
+                LOG.warning(_("Unknown status %(stat)s received on fw %(id)s,"
+                            "skipping sample") % {'stat': fw['status'],
+                                                  'id': fw['id']})
                 continue
 
             yield sample.Sample(
@@ -58,7 +57,6 @@ class FirewallPollster(base.BaseServicesPollster):
                 user_id=None,
                 project_id=fw['tenant_id'],
                 resource_id=fw['id'],
-                timestamp=timeutils.utcnow().isoformat(),
                 resource_metadata=self.extract_metadata(fw)
             )
 
@@ -92,6 +90,5 @@ class FirewallPolicyPollster(base.BaseServicesPollster):
                 user_id=None,
                 project_id=fw['tenant_id'],
                 resource_id=fw['id'],
-                timestamp=timeutils.utcnow().isoformat(),
                 resource_metadata=self.extract_metadata(fw)
             )

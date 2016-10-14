@@ -30,7 +30,8 @@ class TestDispatcherDB(base.BaseTestCase):
         super(TestDispatcherDB, self).setUp()
         self.CONF = self.useFixture(fixture_config.Config()).conf
         self.CONF.set_override('connection', 'sqlite://', group='database')
-        self.dispatcher = database.DatabaseDispatcher(self.CONF)
+        self.meter_dispatcher = database.MeterDatabaseDispatcher(self.CONF)
+        self.event_dispatcher = database.EventDatabaseDispatcher(self.CONF)
         self.ctx = None
 
     def test_event_conn(self):
@@ -39,32 +40,10 @@ class TestDispatcherDB(base.BaseTestCase):
                                    [], {})
         event = utils.message_from_event(event,
                                          self.CONF.publisher.telemetry_secret)
-        with mock.patch.object(self.dispatcher.event_conn,
+        with mock.patch.object(self.event_dispatcher.conn,
                                'record_events') as record_events:
-            self.dispatcher.record_events(event)
+            self.event_dispatcher.record_events(event)
         self.assertEqual(1, len(record_events.call_args_list[0][0][0]))
-
-    @mock.patch('ceilometer.publisher.utils.verify_signature')
-    def test_event_with_bad_signature(self, mocked_verify):
-        event = event_models.Event(uuid.uuid4(), 'test',
-                                   datetime.datetime(2012, 7, 2, 13, 53, 40),
-                                   [], {}).serialize()
-
-        def _fake_verify(ev, secret):
-            if ev.get('message_signature') == 'bad_signature':
-                return False
-            return True
-        mocked_verify.side_effect = _fake_verify
-        with mock.patch.object(self.dispatcher.event_conn,
-                               'record_events') as record_events:
-            event['message_signature'] = 'bad_signature'
-            self.dispatcher.record_events(event)
-            self.assertEqual([], record_events.call_args_list[0][0][0])
-            del event['message_signature']
-            event['message_signature'] = utils.compute_signature(
-                event, self.CONF.publisher.telemetry_secret)
-            self.dispatcher.record_events(event)
-            self.assertEqual(1, len(record_events.call_args_list[1][0][0]))
 
     def test_valid_message(self):
         msg = {'counter_name': 'test',
@@ -75,31 +54,11 @@ class TestDispatcherDB(base.BaseTestCase):
             msg, self.CONF.publisher.telemetry_secret,
         )
 
-        with mock.patch.object(self.dispatcher.meter_conn,
+        with mock.patch.object(self.meter_dispatcher.conn,
                                'record_metering_data') as record_metering_data:
-            self.dispatcher.record_metering_data(msg)
+            self.meter_dispatcher.record_metering_data(msg)
 
         record_metering_data.assert_called_once_with(msg)
-
-    def test_invalid_message(self):
-        msg = {'counter_name': 'test',
-               'resource_id': self.id(),
-               'counter_volume': 1,
-               'message_signature': 'invalid-signature'}
-
-        class ErrorConnection(object):
-
-            called = False
-
-            def record_metering_data(self, data):
-                self.called = True
-
-        self.dispatcher._meter_conn = ErrorConnection()
-
-        self.dispatcher.record_metering_data(msg)
-
-        if self.dispatcher.meter_conn.called:
-            self.fail('Should not have called the storage connection')
 
     def test_timestamp_conversion(self):
         msg = {'counter_name': 'test',
@@ -114,9 +73,9 @@ class TestDispatcherDB(base.BaseTestCase):
         expected = msg.copy()
         expected['timestamp'] = datetime.datetime(2012, 7, 2, 13, 53, 40)
 
-        with mock.patch.object(self.dispatcher.meter_conn,
+        with mock.patch.object(self.meter_dispatcher.conn,
                                'record_metering_data') as record_metering_data:
-            self.dispatcher.record_metering_data(msg)
+            self.meter_dispatcher.record_metering_data(msg)
 
         record_metering_data.assert_called_once_with(expected)
 
@@ -134,8 +93,8 @@ class TestDispatcherDB(base.BaseTestCase):
         expected['timestamp'] = datetime.datetime(2012, 9, 30, 23,
                                                   31, 50, 262000)
 
-        with mock.patch.object(self.dispatcher.meter_conn,
+        with mock.patch.object(self.meter_dispatcher.conn,
                                'record_metering_data') as record_metering_data:
-            self.dispatcher.record_metering_data(msg)
+            self.meter_dispatcher.record_metering_data(msg)
 
         record_metering_data.assert_called_once_with(expected)

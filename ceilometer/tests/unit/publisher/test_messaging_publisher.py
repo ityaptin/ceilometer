@@ -19,12 +19,10 @@ import uuid
 
 import mock
 from oslo_config import fixture as fixture_config
-from oslo_context import context
 from oslo_utils import netutils
 import testscenarios.testcase
 
 from ceilometer.event.storage import models as event
-from ceilometer import messaging
 from ceilometer.publisher import messaging as msg_publisher
 from ceilometer import sample
 from ceilometer.tests import base as tests_base
@@ -103,91 +101,45 @@ class BasePublisherTestCase(tests_base.BaseTestCase):
         self.setup_messaging(self.CONF)
 
 
-class RpcOnlyPublisherTest(BasePublisherTestCase):
-    def test_published_no_mock(self):
-        publisher = msg_publisher.RPCPublisher(
-            netutils.urlsplit('rpc://'))
-
-        endpoint = mock.MagicMock(['record_metering_data'])
-        collector = messaging.get_rpc_server(
-            self.transport, self.CONF.publisher_rpc.metering_topic, endpoint)
-        endpoint.record_metering_data.side_effect = (lambda *args, **kwds:
-                                                     collector.stop())
-
-        collector.start()
-        publisher.publish_samples(context.RequestContext(),
-                                  self.test_sample_data)
-        collector.wait()
-
-        class Matcher(object):
-            @staticmethod
-            def __eq__(data):
-                for i, sample_item in enumerate(data):
-                    if (sample_item['counter_name'] !=
-                            self.test_sample_data[i].name):
-                        return False
-                return True
-
-        endpoint.record_metering_data.assert_called_once_with(
-            mock.ANY, data=Matcher())
-
-    def test_publish_target(self):
-        publisher = msg_publisher.RPCPublisher(
-            netutils.urlsplit('rpc://?target=custom_procedure_call'))
-        cast_context = mock.MagicMock()
-        with mock.patch.object(publisher.rpc_client, 'prepare') as prepare:
-            prepare.return_value = cast_context
-            publisher.publish_samples(mock.MagicMock(),
-                                      self.test_sample_data)
-
-        prepare.assert_called_once_with(
-            topic=self.CONF.publisher_rpc.metering_topic)
-        cast_context.cast.assert_called_once_with(
-            mock.ANY, 'custom_procedure_call', data=mock.ANY)
-
-    def test_published_with_per_meter_topic(self):
-        publisher = msg_publisher.RPCPublisher(
-            netutils.urlsplit('rpc://?per_meter_topic=1'))
-        with mock.patch.object(publisher.rpc_client, 'prepare') as prepare:
-            publisher.publish_samples(mock.MagicMock(),
-                                      self.test_sample_data)
-
-            class MeterGroupMatcher(object):
-                def __eq__(self, meters):
-                    return len(set(meter['counter_name']
-                                   for meter in meters)) == 1
-
-            topic = self.CONF.publisher_rpc.metering_topic
-            expected = [mock.call(topic=topic),
-                        mock.call().cast(mock.ANY, 'record_metering_data',
-                                         data=mock.ANY),
-                        mock.call(topic=topic + '.test'),
-                        mock.call().cast(mock.ANY, 'record_metering_data',
-                                         data=MeterGroupMatcher()),
-                        mock.call(topic=topic + '.test2'),
-                        mock.call().cast(mock.ANY, 'record_metering_data',
-                                         data=MeterGroupMatcher()),
-                        mock.call(topic=topic + '.test3'),
-                        mock.call().cast(mock.ANY, 'record_metering_data',
-                                         data=MeterGroupMatcher())]
-            self.assertEqual(expected, prepare.mock_calls)
-
-
 class NotifierOnlyPublisherTest(BasePublisherTestCase):
 
     @mock.patch('oslo_messaging.Notifier')
     def test_publish_topic_override(self, notifier):
         msg_publisher.SampleNotifierPublisher(
             netutils.urlsplit('notifier://?topic=custom_topic'))
-        notifier.assert_called_with(mock.ANY, topic='custom_topic',
+        notifier.assert_called_with(mock.ANY, topics=['custom_topic'],
                                     driver=mock.ANY, retry=mock.ANY,
                                     publisher_id=mock.ANY)
 
         msg_publisher.EventNotifierPublisher(
             netutils.urlsplit('notifier://?topic=custom_event_topic'))
-        notifier.assert_called_with(mock.ANY, topic='custom_event_topic',
+        notifier.assert_called_with(mock.ANY, topics=['custom_event_topic'],
                                     driver=mock.ANY, retry=mock.ANY,
                                     publisher_id=mock.ANY)
+
+    @mock.patch('ceilometer.messaging.get_transport')
+    def test_publish_other_host(self, cgt):
+        msg_publisher.SampleNotifierPublisher(
+            netutils.urlsplit('notifier://foo:foo@127.0.0.1:1234'))
+        cgt.assert_called_with(self.CONF, 'rabbit://foo:foo@127.0.0.1:1234')
+
+        msg_publisher.EventNotifierPublisher(
+            netutils.urlsplit('notifier://foo:foo@127.0.0.1:1234'))
+        cgt.assert_called_with(self.CONF, 'rabbit://foo:foo@127.0.0.1:1234')
+
+    @mock.patch('ceilometer.messaging.get_transport')
+    def test_publish_other_host_vhost_and_query(self, cgt):
+        msg_publisher.SampleNotifierPublisher(
+            netutils.urlsplit('notifier://foo:foo@127.0.0.1:1234/foo'
+                              '?driver=amqp&amqp_auto_delete=true'))
+        cgt.assert_called_with(self.CONF, 'amqp://foo:foo@127.0.0.1:1234/foo'
+                               '?amqp_auto_delete=true')
+
+        msg_publisher.EventNotifierPublisher(
+            netutils.urlsplit('notifier://foo:foo@127.0.0.1:1234/foo'
+                              '?driver=amqp&amqp_auto_delete=true'))
+        cgt.assert_called_with(self.CONF, 'amqp://foo:foo@127.0.0.1:1234/foo'
+                               '?amqp_auto_delete=true')
 
 
 class TestPublisher(testscenarios.testcase.WithScenarios,
@@ -203,17 +155,13 @@ class TestPublisher(testscenarios.testcase.WithScenarios,
               publisher_cls=msg_publisher.EventNotifierPublisher,
               test_data=BasePublisherTestCase.test_event_data,
               pub_func='publish_events', attr='event_type')),
-        ('rpc', dict(protocol="rpc",
-                     publisher_cls=msg_publisher.RPCPublisher,
-                     test_data=BasePublisherTestCase.test_sample_data,
-                     pub_func='publish_samples', attr='source')),
     ]
 
     def setUp(self):
         super(TestPublisher, self).setUp()
         self.topic = (self.CONF.publisher_notifier.event_topic
                       if self.pub_func == 'publish_events' else
-                      self.CONF.publisher_rpc.metering_topic)
+                      self.CONF.publisher_notifier.metering_topic)
 
 
 class TestPublisherPolicy(TestPublisher):
@@ -227,12 +175,12 @@ class TestPublisherPolicy(TestPublisher):
             self.assertRaises(
                 msg_publisher.DeliveryFailure,
                 getattr(publisher, self.pub_func),
-                mock.MagicMock(), self.test_data)
+                self.test_data)
             self.assertTrue(mylog.info.called)
             self.assertEqual('default', publisher.policy)
             self.assertEqual(0, len(publisher.local_queue))
             fake_send.assert_called_once_with(
-                mock.ANY, self.topic, mock.ANY)
+                self.topic, mock.ANY)
 
     @mock.patch('ceilometer.publisher.messaging.LOG')
     def test_published_with_policy_block(self, mylog):
@@ -244,11 +192,11 @@ class TestPublisherPolicy(TestPublisher):
             self.assertRaises(
                 msg_publisher.DeliveryFailure,
                 getattr(publisher, self.pub_func),
-                mock.MagicMock(), self.test_data)
+                self.test_data)
             self.assertTrue(mylog.info.called)
             self.assertEqual(0, len(publisher.local_queue))
             fake_send.assert_called_once_with(
-                mock.ANY, self.topic, mock.ANY)
+                self.topic, mock.ANY)
 
     @mock.patch('ceilometer.publisher.messaging.LOG')
     def test_published_with_policy_incorrect(self, mylog):
@@ -260,12 +208,12 @@ class TestPublisherPolicy(TestPublisher):
             self.assertRaises(
                 msg_publisher.DeliveryFailure,
                 getattr(publisher, self.pub_func),
-                mock.MagicMock(), self.test_data)
-            self.assertTrue(mylog.warn.called)
+                self.test_data)
+            self.assertTrue(mylog.warning.called)
             self.assertEqual('default', publisher.policy)
             self.assertEqual(0, len(publisher.local_queue))
             fake_send.assert_called_once_with(
-                mock.ANY, self.topic, mock.ANY)
+                self.topic, mock.ANY)
 
 
 @mock.patch('ceilometer.publisher.messaging.LOG', mock.Mock())
@@ -277,11 +225,10 @@ class TestPublisherPolicyReactions(TestPublisher):
         side_effect = msg_publisher.DeliveryFailure()
         with mock.patch.object(publisher, '_send') as fake_send:
             fake_send.side_effect = side_effect
-            getattr(publisher, self.pub_func)(mock.MagicMock(),
-                                              self.test_data)
+            getattr(publisher, self.pub_func)(self.test_data)
             self.assertEqual(0, len(publisher.local_queue))
             fake_send.assert_called_once_with(
-                mock.ANY, self.topic, mock.ANY)
+                self.topic, mock.ANY)
 
     def test_published_with_policy_queue_and_rpc_down(self):
         publisher = self.publisher_cls(
@@ -290,11 +237,10 @@ class TestPublisherPolicyReactions(TestPublisher):
         with mock.patch.object(publisher, '_send') as fake_send:
             fake_send.side_effect = side_effect
 
-            getattr(publisher, self.pub_func)(mock.MagicMock(),
-                                              self.test_data)
+            getattr(publisher, self.pub_func)(self.test_data)
             self.assertEqual(1, len(publisher.local_queue))
             fake_send.assert_called_once_with(
-                mock.ANY, self.topic, mock.ANY)
+                self.topic, mock.ANY)
 
     def test_published_with_policy_queue_and_rpc_down_up(self):
         self.rpc_unreachable = True
@@ -304,21 +250,19 @@ class TestPublisherPolicyReactions(TestPublisher):
         side_effect = msg_publisher.DeliveryFailure()
         with mock.patch.object(publisher, '_send') as fake_send:
             fake_send.side_effect = side_effect
-            getattr(publisher, self.pub_func)(mock.MagicMock(),
-                                              self.test_data)
+            getattr(publisher, self.pub_func)(self.test_data)
 
             self.assertEqual(1, len(publisher.local_queue))
 
             fake_send.side_effect = mock.MagicMock()
-            getattr(publisher, self.pub_func)(mock.MagicMock(),
-                                              self.test_data)
+            getattr(publisher, self.pub_func)(self.test_data)
 
             self.assertEqual(0, len(publisher.local_queue))
 
             topic = self.topic
-            expected = [mock.call(mock.ANY, topic, mock.ANY),
-                        mock.call(mock.ANY, topic, mock.ANY),
-                        mock.call(mock.ANY, topic, mock.ANY)]
+            expected = [mock.call(topic, mock.ANY),
+                        mock.call(topic, mock.ANY),
+                        mock.call(topic, mock.ANY)]
             self.assertEqual(expected, fake_send.mock_calls)
 
     def test_published_with_policy_sized_queue_and_rpc_down(self):
@@ -331,21 +275,20 @@ class TestPublisherPolicyReactions(TestPublisher):
             for i in range(0, 5):
                 for s in self.test_data:
                     setattr(s, self.attr, 'test-%d' % i)
-                getattr(publisher, self.pub_func)(mock.MagicMock(),
-                                                  self.test_data)
+                getattr(publisher, self.pub_func)(self.test_data)
 
         self.assertEqual(3, len(publisher.local_queue))
         self.assertEqual(
             'test-2',
-            publisher.local_queue[0][2][0][self.attr]
+            publisher.local_queue[0][1][0][self.attr]
         )
         self.assertEqual(
             'test-3',
-            publisher.local_queue[1][2][0][self.attr]
+            publisher.local_queue[1][1][0][self.attr]
         )
         self.assertEqual(
             'test-4',
-            publisher.local_queue[2][2][0][self.attr]
+            publisher.local_queue[2][1][0][self.attr]
         )
 
     def test_published_with_policy_default_sized_queue_and_rpc_down(self):
@@ -358,15 +301,14 @@ class TestPublisherPolicyReactions(TestPublisher):
             for i in range(0, 2000):
                 for s in self.test_data:
                     setattr(s, self.attr, 'test-%d' % i)
-                getattr(publisher, self.pub_func)(mock.MagicMock(),
-                                                  self.test_data)
+                getattr(publisher, self.pub_func)(self.test_data)
 
         self.assertEqual(1024, len(publisher.local_queue))
         self.assertEqual(
             'test-976',
-            publisher.local_queue[0][2][0][self.attr]
+            publisher.local_queue[0][1][0][self.attr]
         )
         self.assertEqual(
             'test-1999',
-            publisher.local_queue[1023][2][0][self.attr]
+            publisher.local_queue[1023][1][0][self.attr]
         )

@@ -1,9 +1,6 @@
 #
 # Copyright Ericsson AB 2013. All rights reserved
 #
-# Authors: Ildiko Vancsa <ildiko.vancsa@ericsson.com>
-#          Balazs Gibizer <balazs.gibizer@ericsson.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -15,7 +12,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-"""Common functions for MongoDB and DB2 backends
+"""Common functions for MongoDB backend
 """
 
 import datetime
@@ -36,11 +33,6 @@ ERROR_INDEX_WITH_DIFFERENT_SPEC_ALREADY_EXISTS = 86
 
 LOG = log.getLogger(__name__)
 
-# FIXME(dhellmann): Configuration options are not part of the Oslo
-# library APIs, and should not be used like this.
-cfg.CONF.import_opt('max_retries', 'oslo_db.options', group="database")
-cfg.CONF.import_opt('retry_interval', 'oslo_db.options', group="database")
-
 EVENT_TRAIT_TYPES = {'none': 0, 'string': 1, 'integer': 2, 'float': 3,
                      'datetime': 4}
 OP_SIGN = {'lt': '$lt', 'le': '$lte', 'ne': '$ne', 'gt': '$gt', 'ge': '$gte'}
@@ -48,7 +40,8 @@ OP_SIGN = {'lt': '$lt', 'le': '$lte', 'ne': '$ne', 'gt': '$gt', 'ge': '$gte'}
 MINIMUM_COMPATIBLE_MONGODB_VERSION = [2, 4]
 COMPLETE_AGGREGATE_COMPATIBLE_VERSION = [2, 6]
 
-FINALIZE_AGGREGATION_LAMBDA = lambda result, param=None: float(result)
+FINALIZE_FLOAT_LAMBDA = lambda result, param=None: float(result)
+FINALIZE_INT_LAMBDA = lambda result, param=None: int(result)
 CARDINALITY_VALIDATION = (lambda name, param: param in ['resource_id',
                                                         'user_id',
                                                         'project_id',
@@ -271,8 +264,8 @@ class ConnectionPool(object):
         try:
             return MongoProxy(pymongo.MongoClient(url))
         except pymongo.errors.ConnectionFailure as e:
-            LOG.warn(_('Unable to connect to the database server: '
-                       '%(errmsg)s.') % {'errmsg': e})
+            LOG.warning(_('Unable to connect to the database server: '
+                        '%(errmsg)s.') % {'errmsg': e})
             raise
 
 
@@ -402,6 +395,9 @@ class QueryTransformer(object):
 
 def safe_mongo_call(call):
     def closure(*args, **kwargs):
+        # NOTE(idegtiarov) options max_retries and retry_interval have been
+        # registered in storage.__init__ in oslo_db.options.set_defaults
+        # default values for both options are 10.
         max_retries = cfg.CONF.database.max_retries
         retry_interval = cfg.CONF.database.retry_interval
         attempts = 0
@@ -414,10 +410,10 @@ def safe_mongo_call(call):
                                 'after %(retries)d retries. Giving up.') %
                               {'retries': max_retries})
                     raise
-                LOG.warn(_('Unable to reconnect to the primary mongodb: '
-                           '%(errmsg)s. Trying again in %(retry_interval)d '
-                           'seconds.') %
-                         {'errmsg': err, 'retry_interval': retry_interval})
+                LOG.warning(_('Unable to reconnect to the primary '
+                              'mongodb: %(errmsg)s. Trying again in '
+                              '%(retry_interval)d seconds.') %
+                            {'errmsg': err, 'retry_interval': retry_interval})
                 attempts += 1
                 time.sleep(retry_interval)
     return closure
@@ -517,7 +513,7 @@ class AggregationFields(object):
                  finalize=None,
                  parametrized=False,
                  validate=None):
-        self._finalize = finalize or FINALIZE_AGGREGATION_LAMBDA
+        self._finalize = finalize or FINALIZE_FLOAT_LAMBDA
         self.group = lambda *args: group(*args) if parametrized else group
         self.project = (lambda *args: project(*args)
                         if parametrized else project)
@@ -568,23 +564,28 @@ class Aggregation(object):
 SUM_AGGREGATION = Aggregation(
     "sum", AggregationFields(MINIMUM_COMPATIBLE_MONGODB_VERSION,
                              {"sum": {"$sum": "$counter_volume"}},
-                             {"sum": "$sum"}))
+                             {"sum": "$sum"},
+                             ))
 AVG_AGGREGATION = Aggregation(
     "avg", AggregationFields(MINIMUM_COMPATIBLE_MONGODB_VERSION,
                              {"avg": {"$avg": "$counter_volume"}},
-                             {"avg": "$avg"}))
+                             {"avg": "$avg"},
+                             ))
 MIN_AGGREGATION = Aggregation(
     "min", AggregationFields(MINIMUM_COMPATIBLE_MONGODB_VERSION,
                              {"min": {"$min": "$counter_volume"}},
-                             {"min": "$min"}))
+                             {"min": "$min"},
+                             ))
 MAX_AGGREGATION = Aggregation(
     "max", AggregationFields(MINIMUM_COMPATIBLE_MONGODB_VERSION,
                              {"max": {"$max": "$counter_volume"}},
-                             {"max": "$max"}))
+                             {"max": "$max"},
+                             ))
 COUNT_AGGREGATION = Aggregation(
     "count", AggregationFields(MINIMUM_COMPATIBLE_MONGODB_VERSION,
                                {"count": {"$sum": 1}},
-                               {"count": "$count"}))
+                               {"count": "$count"},
+                               FINALIZE_INT_LAMBDA))
 STDDEV_AGGREGATION = Aggregation(
     "stddev",
     AggregationFields(MINIMUM_COMPATIBLE_MONGODB_VERSION,
@@ -628,12 +629,6 @@ CARDINALITY_AGGREGATION = Aggregation(
                        validate=CARDINALITY_VALIDATION,
                        parametrized=True)]
 )
-
-
-def to_unix_timestamp(timestamp):
-    if isinstance(timestamp, datetime.datetime):
-        return int(time.mktime(timestamp.timetuple()))
-    return timestamp
 
 
 def from_unix_timestamp(timestamp):

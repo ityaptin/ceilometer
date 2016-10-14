@@ -14,15 +14,18 @@
 from oslo_config import cfg
 
 EXCHANGE_OPTS = [
+    cfg.StrOpt('nova_control_exchange',
+               default='nova',
+               help="Exchange name for Nova notifications."),
+    cfg.StrOpt('neutron_control_exchange',
+               default='neutron',
+               help="Exchange name for Neutron notifications."),
     cfg.StrOpt('heat_control_exchange',
                default='heat',
                help="Exchange name for Heat notifications"),
     cfg.StrOpt('glance_control_exchange',
                default='glance',
                help="Exchange name for Glance notifications."),
-    cfg.StrOpt('magnetodb_control_exchange',
-               default='magnetodb',
-               help="Exchange name for Magnetodb notifications."),
     cfg.StrOpt('keystone_control_exchange',
                default='keystone',
                help="Exchange name for Keystone notifications."),
@@ -44,4 +47,7 @@ EXCHANGE_OPTS = [
     cfg.StrOpt('zaqar_control_exchange',
                default='zaqar',
                help="Exchange name for Messaging service notifications."),
+    cfg.StrOpt('dns_control_exchange',
+               default='central',
+               help="Exchange name for DNS service notifications."),
 ]

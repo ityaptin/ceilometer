@@ -1,9 +1,6 @@
 #
 # Copyright Ericsson AB 2013. All rights reserved
 #
-# Authors: Ildiko Vancsa <ildiko.vancsa@ericsson.com>
-#          Balazs Gibizer <balazs.gibizer@ericsson.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -15,8 +12,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-"""Common functions for MongoDB and DB2 backends
-"""
+"""Common functions for MongoDB backend."""
 import pymongo
 
 from ceilometer.storage import base
@@ -40,7 +36,7 @@ AVAILABLE_STORAGE_CAPABILITIES = {
 
 
 class Connection(base.Connection):
-    """Base Connection class for MongoDB and DB2 drivers."""
+    """Base Connection class for MongoDB driver."""
     CAPABILITIES = utils.update_nested(base.Connection.CAPABILITIES,
                                        COMMON_AVAILABLE_CAPABILITIES)
 
@@ -50,7 +46,7 @@ class Connection(base.Connection):
     )
 
     def get_meters(self, user=None, project=None, resource=None, source=None,
-                   metaquery=None, limit=None):
+                   metaquery=None, limit=None, unique=False):
         """Return an iterable of models.Meter instances
 
         :param user: Optional ID for user that owns the resource.
@@ -59,6 +55,7 @@ class Connection(base.Connection):
         :param source: Optional source filter.
         :param metaquery: Optional dict with metadata to match on.
         :param limit: Maximum number of results to return.
+        :param unique: If set to true, return only unique meter information.
         """
         if limit == 0:
             return
@@ -66,34 +63,61 @@ class Connection(base.Connection):
         metaquery = pymongo_utils.improve_keys(metaquery, metaquery=True) or {}
 
         q = {}
-        if user is not None:
+        if user == 'None':
+            q['user_id'] = None
+        elif user is not None:
             q['user_id'] = user
-        if project is not None:
+        if project == 'None':
+            q['project_id'] = None
+        elif project is not None:
             q['project_id'] = project
-        if resource is not None:
+        if resource == 'None':
+            q['_id'] = None
+        elif resource is not None:
             q['_id'] = resource
         if source is not None:
             q['source'] = source
         q.update(metaquery)
 
         count = 0
+        if unique:
+            meter_names = set()
+
         for r in self.db.resource.find(q):
             for r_meter in r['meter']:
+                if unique:
+                    if r_meter['counter_name'] in meter_names:
+                        continue
+                    else:
+                        meter_names.add(r_meter['counter_name'])
+
                 if limit and count >= limit:
                     return
                 else:
                     count += 1
-                yield models.Meter(
-                    name=r_meter['counter_name'],
-                    type=r_meter['counter_type'],
-                    # Return empty string if 'counter_unit' is not valid for
-                    # backward compatibility.
-                    unit=r_meter.get('counter_unit', ''),
-                    resource_id=r['_id'],
-                    project_id=r['project_id'],
-                    source=r['source'],
-                    user_id=r['user_id'],
-                )
+
+                if unique:
+                    yield models.Meter(
+                        name=r_meter['counter_name'],
+                        type=r_meter['counter_type'],
+                        # Return empty string if 'counter_unit' is not valid
+                        # for backward compatibility.
+                        unit=r_meter.get('counter_unit', ''),
+                        resource_id=None,
+                        project_id=None,
+                        source=None,
+                        user_id=None)
+                else:
+                    yield models.Meter(
+                        name=r_meter['counter_name'],
+                        type=r_meter['counter_type'],
+                        # Return empty string if 'counter_unit' is not valid
+                        # for backward compatibility.
+                        unit=r_meter.get('counter_unit', ''),
+                        resource_id=r['_id'],
+                        project_id=r['project_id'],
+                        source=r['source'],
+                        user_id=r['user_id'])
 
     def get_samples(self, sample_filter, limit=None):
         """Return an iterable of model.Sample instances.

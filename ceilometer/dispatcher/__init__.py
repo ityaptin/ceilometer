@@ -28,17 +28,30 @@ LOG = log.getLogger(__name__)
 OPTS = [
     cfg.MultiStrOpt('meter_dispatchers',
                     deprecated_name='dispatcher',
-                    default=['database'],
+                    default=[],
                     help='Dispatchers to process metering data.'),
     cfg.MultiStrOpt('event_dispatchers',
-                    default=['database'],
+                    default=[],
                     deprecated_name='dispatcher',
                     help='Dispatchers to process event data.'),
 ]
 cfg.CONF.register_opts(OPTS)
 
+STORAGE_OPTS = [
+    cfg.IntOpt('max_retries',
+               default=10,
+               deprecated_group='database',
+               help='Maximum number of connection retries during startup. '
+                    'Set to -1 to specify an infinite retry count.'),
+    cfg.IntOpt('retry_interval',
+               default=10,
+               deprecated_group='database',
+               help='Interval (in seconds) between retries of connection.'),
+]
+cfg.CONF.register_opts(STORAGE_OPTS, group='storage')
 
-def _load_dispatcher_manager(dispatcher_type):
+
+def _load_dispatcher_manager(conf, dispatcher_type):
     namespace = 'ceilometer.dispatcher.%s' % dispatcher_type
     conf_name = '%s_dispatchers' % dispatcher_type
 
@@ -47,9 +60,9 @@ def _load_dispatcher_manager(dispatcher_type):
     # to propagate exceptions.
     dispatcher_manager = named.NamedExtensionManager(
         namespace=namespace,
-        names=getattr(cfg.CONF, conf_name),
+        names=getattr(conf, conf_name),
         invoke_on_load=True,
-        invoke_args=[cfg.CONF],
+        invoke_args=[conf],
         propagate_map_exceptions=True)
     if not list(dispatcher_manager):
         LOG.warning(_LW('Failed to load any dispatchers for %s'),
@@ -57,9 +70,9 @@ def _load_dispatcher_manager(dispatcher_type):
     return dispatcher_manager
 
 
-def load_dispatcher_manager():
-    return (_load_dispatcher_manager('meter'),
-            _load_dispatcher_manager('event'))
+def load_dispatcher_manager(conf):
+    return (_load_dispatcher_manager(conf, 'meter'),
+            _load_dispatcher_manager(conf, 'event'))
 
 
 class Base(object):
@@ -78,4 +91,4 @@ class MeterDispatcherBase(Base):
 class EventDispatcherBase(Base):
     @abc.abstractmethod
     def record_events(self, events):
-        """Recording events interface."""
+        """Record events."""

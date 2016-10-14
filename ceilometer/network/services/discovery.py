@@ -13,6 +13,8 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+from oslo_config import cfg
+
 from ceilometer.agent import plugin_base
 from ceilometer import neutron_client
 
@@ -22,7 +24,7 @@ class _BaseServicesDiscovery(plugin_base.DiscoveryBase):
 
     def __init__(self):
         super(_BaseServicesDiscovery, self).__init__()
-        self.neutron_cli = neutron_client.Client()
+        self.neutron_cli = neutron_client.Client(cfg.CONF)
 
 
 class LBPoolsDiscovery(_BaseServicesDiscovery):
@@ -50,6 +52,24 @@ class LBMembersDiscovery(_BaseServicesDiscovery):
         members = self.neutron_cli.member_get_all()
         return [i for i in members
                 if i.get('status', None) != 'error']
+
+
+class LBListenersDiscovery(_BaseServicesDiscovery):
+    def discover(self, manager, param=None):
+        """Discover load balancer listener resources to monitor."""
+
+        listeners = self.neutron_cli.list_listener()
+        return [i for i in listeners
+                if i.get('operating_status', None) != 'error']
+
+
+class LBLoadBalancersDiscovery(_BaseServicesDiscovery):
+    def discover(self, manager, param=None):
+        """Discover load balancer resources to monitor."""
+
+        loadbalancers = self.neutron_cli.list_loadbalancer()
+        return [i for i in loadbalancers
+                if i.get('operating_status', None) != 'error']
 
 
 class LBHealthMonitorsDiscovery(_BaseServicesDiscovery):
@@ -91,3 +111,10 @@ class FirewallPolicyDiscovery(_BaseServicesDiscovery):
         """Discover resources to monitor."""
 
         return self.neutron_cli.fw_policy_get_all()
+
+
+class FloatingIPDiscovery(_BaseServicesDiscovery):
+    def discover(self, manager, param=None):
+        """Discover floating IP resources to monitor."""
+
+        return self.neutron_cli.fip_get_all()

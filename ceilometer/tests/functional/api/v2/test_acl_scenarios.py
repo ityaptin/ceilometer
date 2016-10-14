@@ -15,74 +15,47 @@
 """Test ACL."""
 
 import datetime
-import hashlib
-import json
 import os
+import uuid
 
+from keystonemiddleware import fixture as ksm_fixture
 from oslo_utils import fileutils
-from oslo_utils import timeutils
 import six
 import webtest
 
 from ceilometer.api import app
+from ceilometer.event.storage import models as ev_model
 from ceilometer.publisher import utils
 from ceilometer import sample
-from ceilometer.tests.functional import api as acl
 from ceilometer.tests.functional.api import v2
 
-VALID_TOKEN = '4562138218392831'
-VALID_TOKEN2 = '4562138218392832'
-
-
-class FakeMemcache(object):
-
-    TOKEN_HASH = hashlib.sha256(VALID_TOKEN.encode('utf-8')).hexdigest()
-    TOKEN2_HASH = hashlib.sha256(VALID_TOKEN2.encode('utf-8')).hexdigest()
-
-    def get(self, key):
-        if (key == "tokens/%s" % VALID_TOKEN or
-                key == "tokens/%s" % self.TOKEN_HASH):
-            dt = timeutils.utcnow() + datetime.timedelta(minutes=5)
-            dt_isoformat = dt.isoformat()
-            return json.dumps(({'access': {
-                'token': {'id': VALID_TOKEN,
-                          'expires': dt_isoformat},
-                'user': {
-                    'id': 'user_id1',
-                    'name': 'user_name1',
-                    'tenantId': '123i2910',
-                    'tenantName': 'mytenant',
-                    'roles': [
-                        {'name': 'admin'},
-                    ]},
-            }}, dt_isoformat))
-        if (key == "tokens/%s" % VALID_TOKEN2 or
-                key == "tokens/%s" % self.TOKEN2_HASH):
-            dt = timeutils.utcnow() + datetime.timedelta(minutes=5)
-            dt_isoformat = dt.isoformat()
-            return json.dumps(({'access': {
-                'token': {'id': VALID_TOKEN2,
-                          'expires': dt_isoformat},
-                'user': {
-                    'id': 'user_id2',
-                    'name': 'user-good',
-                    'tenantId': 'project-good',
-                    'tenantName': 'goodies',
-                    'roles': [
-                        {'name': 'Member'},
-                    ]},
-            }}, dt_isoformat))
-
-    @staticmethod
-    def set(key, value, **kwargs):
-        pass
+VALID_TOKEN = uuid.uuid4().hex
+VALID_TOKEN2 = uuid.uuid4().hex
 
 
 class TestAPIACL(v2.FunctionalTest):
 
     def setUp(self):
         super(TestAPIACL, self).setUp()
-        self.environ = {'fake.cache': FakeMemcache()}
+        self.auth_token_fixture = self.useFixture(
+            ksm_fixture.AuthTokenFixture())
+        self.auth_token_fixture.add_token_data(
+            token_id=VALID_TOKEN,
+            # FIXME(morganfainberg): The project-id should be a proper uuid
+            project_id='123i2910',
+            role_list=['admin'],
+            user_name='user_id2',
+            user_id='user_id2',
+            is_v2=True
+        )
+        self.auth_token_fixture.add_token_data(
+            token_id=VALID_TOKEN2,
+            # FIXME(morganfainberg): The project-id should be a proper uuid
+            project_id='project-good',
+            role_list=['Member'],
+            user_name='user_id1',
+            user_id='user_id1',
+            is_v2=True)
 
         for cnt in [
                 sample.Sample(
@@ -119,14 +92,12 @@ class TestAPIACL(v2.FunctionalTest):
                                                 expect_errors=expect_errors,
                                                 headers=headers,
                                                 q=q or [],
-                                                extra_environ=self.environ,
                                                 **params)
 
     def _make_app(self):
-        self.CONF.set_override("cache", "fake.cache", group=acl.OPT_GROUP_NAME)
         file_name = self.path_get('etc/ceilometer/api_paste.ini')
         self.CONF.set_override("api_paste_config", file_name)
-        return webtest.TestApp(app.load_app())
+        return webtest.TestApp(app.load_app(self.CONF))
 
     def test_non_authenticated(self):
         response = self.get_json('/meters', expect_errors=True)
@@ -162,7 +133,6 @@ class TestAPIACL(v2.FunctionalTest):
         data = self.get_json('/meters',
                              headers={"X-Auth-Token": VALID_TOKEN,
                                       "X-Roles": "admin",
-                                      "X-Tenant-Name": "admin",
                                       "X-Project-Id":
                                       "bc23a9d531064583ace8f67dad60f6bb",
                                       })
@@ -226,51 +196,18 @@ class TestAPIEventACL(TestAPIACL):
         self.assertEqual(401, data.status_int)
 
 
-class TestApiEventRBAC(v2.FunctionalTest):
+class TestBaseApiEventRBAC(v2.FunctionalTest):
 
     PATH = '/events'
 
     def setUp(self):
-        super(TestApiEventRBAC, self).setUp()
-        content = ('{"context_is_admin": "role:admin",'
-                   '"segregation": "rule:context_is_admin",'
-                   '"default" : "!",'
-                   '"telemetry:events:index": "rule:context_is_admin",'
-                   '"telemetry:events:show": "rule:context_is_admin"}')
-        if six.PY3:
-            content = content.encode('utf-8')
-        self.tempfile = fileutils.write_to_tempfile(content=content,
-                                                    prefix='policy',
-                                                    suffix='.json')
-
-        self.CONF.set_override("policy_file",
-                               self.path_get(self.tempfile),
-                               group='oslo_policy')
-        self.app = self._make_app()
-
-    def tearDown(self):
-        os.remove(self.tempfile)
-        super(TestApiEventRBAC, self).tearDown()
-
-    def test_get_event_by_message_rbac(self):
-        headers_rbac = {"X-Roles": "non-admin"}
-        data = self.get_json(self.PATH + "/100",
-                             expect_errors=True,
-                             headers=headers_rbac,
-                             status=403)
-        self.assertEqual(u'403 Forbidden\n\nAccess was denied to this '
-                         'resource.\n\n RBAC Authorization Failed  ',
-                         data.json['error_message'])
-
-    def test_get_events_rbac(self):
-        headers_rbac = {"X-Roles": "non-admin"}
-        data = self.get_json(self.PATH,
-                             expect_errors=True,
-                             headers=headers_rbac,
-                             status=403)
-        self.assertEqual(u'403 Forbidden\n\nAccess was denied to this '
-                         'resource.\n\n RBAC Authorization Failed  ',
-                         data.json['error_message'])
+        super(TestBaseApiEventRBAC, self).setUp()
+        traits = [ev_model.Trait('project_id', 1, 'project-good'),
+                  ev_model.Trait('user_id', 1, 'user-good')]
+        self.message_id = str(uuid.uuid4())
+        ev = ev_model.Event(self.message_id, 'event_type',
+                            datetime.datetime.now(), traits, {})
+        self.event_conn.record_events([ev])
 
     def test_get_events_without_project(self):
         headers_no_proj = {"X-Roles": "admin", "X-User-Id": "user-good"}
@@ -291,3 +228,57 @@ class TestApiEventRBAC(v2.FunctionalTest):
                              headers=headers_no_user_proj,
                              status=403)
         self.assertEqual(403, resp.status_int)
+
+    def test_get_events(self):
+        headers = {"X-Roles": "Member", "X-User-Id": "user-good",
+                   "X-Project-Id": "project-good"}
+        self.get_json(self.PATH, headers=headers, status=200)
+
+    def test_get_event(self):
+        headers = {"X-Roles": "Member", "X-User-Id": "user-good",
+                   "X-Project-Id": "project-good"}
+        self.get_json(self.PATH + "/" + self.message_id, headers=headers,
+                      status=200)
+
+
+class TestApiEventAdminRBAC(TestBaseApiEventRBAC):
+
+    def _make_app(self, enable_acl=False):
+        content = ('{"context_is_admin": "role:admin",'
+                   '"telemetry:events:index": "rule:context_is_admin",'
+                   '"telemetry:events:show": "rule:context_is_admin"}')
+        if six.PY3:
+            content = content.encode('utf-8')
+        self.tempfile = fileutils.write_to_tempfile(content=content,
+                                                    prefix='policy',
+                                                    suffix='.json')
+
+        self.CONF.set_override("policy_file", self.tempfile,
+                               group='oslo_policy')
+        return super(TestApiEventAdminRBAC, self)._make_app()
+
+    def tearDown(self):
+        os.remove(self.tempfile)
+        super(TestApiEventAdminRBAC, self).tearDown()
+
+    def test_get_events(self):
+        headers_rbac = {"X-Roles": "admin", "X-User-Id": "user-good",
+                        "X-Project-Id": "project-good"}
+        self.get_json(self.PATH, headers=headers_rbac, status=200)
+
+    def test_get_events_bad(self):
+        headers_rbac = {"X-Roles": "Member", "X-User-Id": "user-good",
+                        "X-Project-Id": "project-good"}
+        self.get_json(self.PATH, headers=headers_rbac, status=403)
+
+    def test_get_event(self):
+        headers = {"X-Roles": "admin", "X-User-Id": "user-good",
+                   "X-Project-Id": "project-good"}
+        self.get_json(self.PATH + "/" + self.message_id, headers=headers,
+                      status=200)
+
+    def test_get_event_bad(self):
+        headers = {"X-Roles": "Member", "X-User-Id": "user-good",
+                   "X-Project-Id": "project-good"}
+        self.get_json(self.PATH + "/" + self.message_id, headers=headers,
+                      status=403)

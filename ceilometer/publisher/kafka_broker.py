@@ -55,9 +55,9 @@ class KafkaBrokerPublisher(messaging.MessagingPublisher):
     metering data under a topic name, 'ceilometer'. If the port number is not
     specified, this Kafka Publisher will use 9092 as the broker's port.
     This publisher has transmit options such as queue, drop, and retry. These
-    this option is specified using policy field of URL parameter. When queue
+    options are specified using policy field of URL parameter. When queue
     option could be selected, local queue length can be determined using
-    max_queue_length field as well. When the transfer fails with with retry
+    max_queue_length field as well. When the transfer fails with retry
     option, try to resend the data as many times as specified in max_retry
     field. If max_retry is not specified, default the number of retry is 100.
     """
@@ -84,7 +84,7 @@ class KafkaBrokerPublisher(messaging.MessagingPublisher):
             raise messaging.DeliveryFailure('Kafka Client is not available, '
                                             'please restart Kafka client')
 
-    def _send(self, context, event_type, data):
+    def _send(self, event_type, data):
         self._ensure_connection()
         # TODO(sileht): don't split the payload into multiple network
         # message ... but how to do that without breaking consuming

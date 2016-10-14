@@ -21,10 +21,10 @@ from oslo_config import fixture as fixture_config
 from oslo_utils import fileutils
 from oslotest import mockpatch
 
+from ceilometer import declarative
 from ceilometer.hardware.inspector import base as inspector_base
 from ceilometer.hardware.pollsters import generic
 from ceilometer import sample
-from ceilometer import service as ceilometer_service
 from ceilometer.tests import base as test_base
 
 
@@ -44,8 +44,8 @@ class TestMeterDefinition(test_base.BaseTestCase):
         cfg = dict(name='test', type='gauge')
         try:
             generic.MeterDefinition(cfg)
-        except generic.MeterDefinitionException as e:
-            self.assertEqual("Missing field unit", e.message)
+        except declarative.MeterDefinitionException as e:
+            self.assertEqual("Missing field unit", e.brief_message)
 
     def test_config_invalid_field(self):
         cfg = dict(name='test',
@@ -62,8 +62,9 @@ class TestMeterDefinition(test_base.BaseTestCase):
                    snmp_inspector={})
         try:
             generic.MeterDefinition(cfg)
-        except generic.MeterDefinitionException as e:
-            self.assertEqual("Unrecognized type value invalid", e.message)
+        except declarative.MeterDefinitionException as e:
+            self.assertEqual("Unrecognized type value invalid",
+                             e.brief_message)
 
     @mock.patch('ceilometer.hardware.pollsters.generic.LOG')
     def test_bad_metric_skip(self, LOG):
@@ -82,7 +83,7 @@ class TestMeterDefinition(test_base.BaseTestCase):
         data = generic.load_definition(cfg)
         self.assertEqual(2, len(data))
         LOG.error.assert_called_with(
-            "Error loading meter definition : "
+            "Error loading meter definition: %s",
             "Unrecognized type value invalid")
 
 
@@ -113,16 +114,10 @@ class TestGenericPollsters(test_base.BaseTestCase):
         self.useFixture(mockpatch.Patch(
             'ceilometer.hardware.inspector.get_inspector',
             self.faux_get_inspector))
-        ceilometer_service.prepare_service(argv=[], config_files=[])
+        self.conf(args=[])
         self.pollster = generic.GenericHardwareDeclarativePollster()
 
-    def test_fallback_meter_path(self):
-        self.useFixture(mockpatch.PatchObject(self.conf,
-                        'find_file', return_value=None))
-        fall_bak_path = generic.get_config_file()
-        self.assertIn("hardware/pollsters/data/snmp.yaml", fall_bak_path)
-
-    def __setup_meter_def_file(self, cfg):
+    def _setup_meter_def_file(self, cfg):
         if six.PY3:
             cfg = cfg.encode('utf-8')
         meter_cfg_file = fileutils.write_to_tempfile(content=cfg,
@@ -131,10 +126,10 @@ class TestGenericPollsters(test_base.BaseTestCase):
         self.conf.set_override(
             'meter_definitions_file',
             meter_cfg_file, group='hardware')
-        cfg = generic.setup_meters_config()
+        cfg = declarative.load_definitions(
+            self.conf, {}, self.conf.hardware.meter_definitions_file)
         return cfg
 
-    @mock.patch('ceilometer.pipeline.setup_pipeline', mock.MagicMock())
     def _check_get_samples(self, name, definition,
                            expected_value, expected_type, expected_unit=None):
         self.pollster._update_meter_definition(definition)
@@ -180,8 +175,10 @@ class TestGenericPollsters(test_base.BaseTestCase):
                         name='hardware.test2.abc',
                         unit='process',
                         snmp_inspector=param)]})
-        self.__setup_meter_def_file(meter_cfg)
+        self._setup_meter_def_file(meter_cfg)
         pollster = generic.GenericHardwareDeclarativePollster
+        # Clear cached mapping
+        pollster.mapping = None
         exts = pollster.get_pollsters_extensions()
         self.assertEqual(2, len(exts))
         self.assertIn(exts[0].name, ['hardware.test1', 'hardware.test2.abc'])

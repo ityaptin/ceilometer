@@ -21,10 +21,11 @@ from oslo_log import log
 import six
 
 import ceilometer
+from ceilometer.agent import plugin_base
 from ceilometer.compute import pollsters
 from ceilometer.compute.pollsters import util
 from ceilometer.compute.virt import inspector as virt_inspector
-from ceilometer.i18n import _, _LW
+from ceilometer.i18n import _
 from ceilometer import sample
 
 LOG = log.getLogger(__name__)
@@ -129,21 +130,11 @@ class _Base(pollsters.BaseComputePollster):
                 'device': c_data.per_disk_requests[_metadata].keys()},
         )]
 
-    @staticmethod
-    def _get_samples_per_device(c_data, _attr, instance, _name, _unit):
+    def _get_samples_per_device(self, c_data, _attr, instance, _name, _unit):
         """Return one or more Samples for meter 'disk.device.*'"""
-        samples = []
-        for disk, value in six.iteritems(c_data.per_disk_requests[_attr]):
-            samples.append(util.make_sample_from_instance(
-                instance,
-                name=_name,
-                type=sample.TYPE_CUMULATIVE,
-                unit=_unit,
-                volume=value,
-                resource_id="%s-%s" % (instance.id, disk),
-                additional_metadata={'disk_name': disk},
-            ))
-        return samples
+        return self._get_samples_per_devices(c_data.per_disk_requests[_attr],
+                                             instance, _name,
+                                             sample.TYPE_CUMULATIVE, _unit)
 
     def get_samples(self, manager, cache, resources):
         for instance in resources:
@@ -160,16 +151,17 @@ class _Base(pollsters.BaseComputePollster):
                 # Instance was deleted while getting samples. Ignore it.
                 LOG.debug('Exception while getting samples %s', err)
             except virt_inspector.InstanceShutOffException as e:
-                LOG.warning(_LW('Instance %(instance_id)s was shut off while '
-                                'getting samples of %(pollster)s: %(exc)s'),
-                            {'instance_id': instance.id,
-                             'pollster': self.__class__.__name__, 'exc': e})
+                LOG.debug('Instance %(instance_id)s was shut off while '
+                          'getting samples of %(pollster)s: %(exc)s',
+                          {'instance_id': instance.id,
+                           'pollster': self.__class__.__name__, 'exc': e})
             except ceilometer.NotImplementedError:
                 # Selected inspector does not implement this pollster.
                 LOG.debug('%(inspector)s does not provide data for '
                           ' %(pollster)s',
                           {'inspector': self.inspector.__class__.__name__,
                            'pollster': self.__class__.__name__})
+                raise plugin_base.PollsterPermanentError(resources)
             except Exception as err:
                 LOG.exception(_('Ignoring instance %(name)s: %(error)s'),
                               {'name': instance_name, 'error': err})
@@ -307,6 +299,7 @@ class _DiskRatesPollsterBase(pollsters.BaseComputePollster):
                           ' %(pollster)s',
                           {'inspector': self.inspector.__class__.__name__,
                            'pollster': self.__class__.__name__})
+                raise plugin_base.PollsterPermanentError(resources)
             except Exception as err:
                 instance_name = util.instance_name(instance)
                 LOG.exception(_('Ignoring instance %(name)s: %(error)s'),
@@ -315,19 +308,9 @@ class _DiskRatesPollsterBase(pollsters.BaseComputePollster):
     def _get_samples_per_device(self, disk_rates_info, _attr, instance,
                                 _name, _unit):
         """Return one or more Samples for meter 'disk.device.*'."""
-        samples = []
-        for disk, value in six.iteritems(disk_rates_info.per_disk_rate[
-                _attr]):
-            samples.append(util.make_sample_from_instance(
-                instance,
-                name=_name,
-                type=sample.TYPE_GAUGE,
-                unit=_unit,
-                volume=value,
-                resource_id="%s-%s" % (instance.id, disk),
-                additional_metadata={'disk_name': disk},
-            ))
-        return samples
+        return self._get_samples_per_devices(
+            disk_rates_info.per_disk_rate[_attr],
+            instance, _name, sample.TYPE_GAUGE, _unit)
 
     def _get_sample_read_and_write(self, instance, _name, _unit, _element,
                                    _attr1, _attr2):
@@ -442,6 +425,7 @@ class _DiskLatencyPollsterBase(pollsters.BaseComputePollster):
                           ' %(pollster)s',
                           {'inspector': self.inspector.__class__.__name__,
                            'pollster': self.__class__.__name__})
+                raise plugin_base.PollsterPermanentError(resources)
             except Exception as err:
                 instance_name = util.instance_name(instance)
                 LOG.exception(_('Ignoring instance %(name)s: %(error)s'),
@@ -512,6 +496,7 @@ class _DiskIOPSPollsterBase(pollsters.BaseComputePollster):
                           '%(pollster)s',
                           {'inspector': self.inspector.__class__.__name__,
                            'pollster': self.__class__.__name__})
+                raise plugin_base.PollsterPermanentError(resources)
             except Exception as err:
                 instance_name = util.instance_name(instance)
                 LOG.exception(_('Ignoring instance %(name)s: %(error)s'),
@@ -630,16 +615,17 @@ class _DiskInfoPollsterBase(pollsters.BaseComputePollster):
                 # Instance was deleted while getting samples. Ignore it.
                 LOG.debug('Exception while getting samples %s', err)
             except virt_inspector.InstanceShutOffException as e:
-                LOG.warning(_LW('Instance %(instance_id)s was shut off while '
-                                'getting samples of %(pollster)s: %(exc)s'),
-                            {'instance_id': instance.id,
-                             'pollster': self.__class__.__name__, 'exc': e})
+                LOG.debug('Instance %(instance_id)s was shut off while '
+                          'getting samples of %(pollster)s: %(exc)s',
+                          {'instance_id': instance.id,
+                           'pollster': self.__class__.__name__, 'exc': e})
             except ceilometer.NotImplementedError:
                 # Selected inspector does not implement this pollster.
                 LOG.debug('%(inspector)s does not provide data for '
                           ' %(pollster)s',
                           {'inspector': self.inspector.__class__.__name__,
                            'pollster': self.__class__.__name__})
+                raise plugin_base.PollsterPermanentError(resources)
             except Exception as err:
                 instance_name = util.instance_name(instance)
                 LOG.exception(_('Ignoring instance %(name)s '

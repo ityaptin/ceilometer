@@ -40,7 +40,7 @@ work with a copy of ceilometer installed via devstack.
    ``/etc/httpd/conf.d``.
 
 2. Modify the ``WSGIDaemonProcess`` directive to set the ``user`` and
-   ``group`` values to a appropriate user on your server. In many
+   ``group`` values to an appropriate user on your server. In many
    installations ``ceilometer`` will be correct.
 
 3. Enable the ceilometer site. On deb-based systems::
@@ -51,16 +51,3 @@ work with a copy of ceilometer installed via devstack.
    On rpm-based systems::
 
       $ service httpd reload
-
-
-Limitation
-==========
-
-As Ceilometer is using Pecan and Pecan's DebugMiddleware doesn't support
-multiple processes, there is no way to set debug mode in the multiprocessing
-case. To allow multiple processes the DebugMiddleware may be turned off by
-setting ``pecan_debug`` to ``False`` in the ``api`` section of
-``ceilometer.conf``.
-
-For other WSGI setup you can refer to the `pecan deployment`_ documentation.
-.. _`pecan deployment`: http://pecan.readthedocs.org/en/latest/deployment.html

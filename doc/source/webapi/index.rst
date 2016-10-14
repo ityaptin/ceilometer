@@ -2,15 +2,22 @@
  Web API
 =========
 
+.. note::
+
+   Gnocchi provides a more responsive API when statistical capabilities rather
+   than full-resolution datapoints are required. The REST API for Gnocchi is
+   captured here_.
+
+.. _here: http://docs.openstack.org/developer/gnocchi/rest.html
+
 .. toctree::
    :maxdepth: 2
 
-   v1
    v2
 
 You can get API version list via request to endpoint root path. For example::
 
-  curl -H "X-AUTH-TOKEN: fa2ec18631f94039a5b9a8b4fe8f56ad" http://127.0.0.1:8777
+    $ curl -H "X-AUTH-TOKEN: fa2ec18631f94039a5b9a8b4fe8f56ad" http://127.0.0.1:8777
 
 Sample response::
 

@@ -12,9 +12,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import datetime
-
-from keystoneclient import exceptions
+from keystoneauth1 import exceptions
 from oslo_config import cfg
 from oslo_log import log
 import requests
@@ -104,8 +102,6 @@ class EnergyPollster(_Base):
                     user_id=None,
                     project_id=None,
                     resource_id=probe['id'],
-                    timestamp=datetime.datetime.fromtimestamp(
-                        probe['timestamp']).isoformat(),
                     resource_metadata={}
                 )
 
@@ -124,7 +120,5 @@ class PowerPollster(_Base):
                     user_id=None,
                     project_id=None,
                     resource_id=probe['id'],
-                    timestamp=datetime.datetime.fromtimestamp(
-                        probe['timestamp']).isoformat(),
                     resource_metadata={}
                 )

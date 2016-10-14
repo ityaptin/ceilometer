@@ -19,21 +19,16 @@ import oslo_messaging
 from ceilometer.agent import plugin_base
 from ceilometer import sample
 
-cfg.CONF.import_opt('nova_control_exchange',
-                    'ceilometer.compute.notifications')
-cfg.CONF.import_opt('glance_control_exchange',
-                    'ceilometer.notification')
-cfg.CONF.import_opt('neutron_control_exchange',
-                    'ceilometer.network.notifications')
-cfg.CONF.import_opt('cinder_control_exchange',
-                    'ceilometer.notification')
 
+# NOTE(sileht): reading config values at loadtime won't works
+# we should use set_defaults at runtime to set http_control_exchanges to
+# [cfg.CONF.nova_control_exchange,
+#  cfg.CONF.glance_control_exchange,
+#  cfg.CONF.neutron_control_exchange,
+#  cfg.CONF.cinder_control_exchange],
 OPTS = [
     cfg.MultiStrOpt('http_control_exchanges',
-                    default=[cfg.CONF.nova_control_exchange,
-                             cfg.CONF.glance_control_exchange,
-                             cfg.CONF.neutron_control_exchange,
-                             cfg.CONF.cinder_control_exchange],
+                    default=['nova', 'glance', 'neutron', 'cinder'],
                     help="Exchanges name to listen for notifications."),
 ]
 

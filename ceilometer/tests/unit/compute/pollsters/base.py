@@ -15,6 +15,7 @@
 # under the License.
 
 import mock
+from oslo_config import fixture as fixture_config
 from oslotest import mockpatch
 
 import ceilometer.tests.base as base
@@ -24,6 +25,7 @@ class TestPollsterBase(base.BaseTestCase):
 
     def setUp(self):
         super(TestPollsterBase, self).setUp()
+        self.CONF = self.useFixture(fixture_config.Config()).conf
 
         self.inspector = mock.Mock()
         self.instance = mock.MagicMock()
@@ -32,6 +34,7 @@ class TestPollsterBase(base.BaseTestCase):
                 self.instance.name)
         setattr(self.instance, 'OS-EXT-STS:vm_state',
                 'active')
+        setattr(self.instance, 'OS-EXT-STS:task_state', None)
         self.instance.id = 1
         self.instance.flavor = {'name': 'm1.small', 'id': 2, 'vcpus': 1,
                                 'ram': 512, 'disk': 20, 'ephemeral': 0}

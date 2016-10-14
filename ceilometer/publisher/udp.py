@@ -23,7 +23,7 @@ from oslo_log import log
 from oslo_utils import netutils
 
 import ceilometer
-from ceilometer.i18n import _
+from ceilometer.i18n import _, _LW
 from ceilometer import publisher
 from ceilometer.publisher import utils
 
@@ -38,17 +38,29 @@ class UDPPublisher(publisher.PublisherBase):
         self.host, self.port = netutils.parse_host_port(
             parsed_url.netloc,
             default_port=cfg.CONF.collector.udp_port)
-        if netutils.is_valid_ipv6(self.host):
-            addr_family = socket.AF_INET6
+        addrinfo = None
+        try:
+            addrinfo = socket.getaddrinfo(self.host, None, socket.AF_INET6,
+                                          socket.SOCK_DGRAM)[0]
+        except socket.gaierror:
+            try:
+                addrinfo = socket.getaddrinfo(self.host, None, socket.AF_INET,
+                                              socket.SOCK_DGRAM)[0]
+            except socket.gaierror:
+                pass
+        if addrinfo:
+            addr_family = addrinfo[0]
         else:
+            LOG.warning(_LW(
+                        "Cannot resolve host %s, creating AF_INET socket..."),
+                        self.host)
             addr_family = socket.AF_INET
         self.socket = socket.socket(addr_family,
                                     socket.SOCK_DGRAM)
 
-    def publish_samples(self, context, samples):
+    def publish_samples(self, samples):
         """Send a metering message for publishing
 
-        :param context: Execution context from the service or RPC call
         :param samples: Samples from pipeline after transformation
         """
 
@@ -64,13 +76,12 @@ class UDPPublisher(publisher.PublisherBase):
                 self.socket.sendto(msgpack.dumps(msg),
                                    (self.host, self.port))
             except Exception as e:
-                LOG.warn(_("Unable to send sample over UDP"))
+                LOG.warning(_("Unable to send sample over UDP"))
                 LOG.exception(e)
 
-    def publish_events(self, context, events):
+    def publish_events(self, events):
         """Send an event message for publishing
 
-        :param context: Execution context from the service or RPC call
         :param events: events from pipeline after transformation
         """
         raise ceilometer.NotImplementedError

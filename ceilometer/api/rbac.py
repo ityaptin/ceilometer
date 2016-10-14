@@ -16,24 +16,11 @@
 
 """Access Control Lists (ACL's) control access the API server."""
 
-from oslo_config import cfg
-from oslo_policy import policy
 import pecan
-
-_ENFORCER = None
-
-CONF = cfg.CONF
-
-
-def reset():
-    global _ENFORCER
-    if _ENFORCER:
-        _ENFORCER.clear()
-        _ENFORCER = None
 
 
 def _has_rule(name):
-    return name in _ENFORCER.rules.keys()
+    return name in pecan.request.enforcer.rules.keys()
 
 
 def enforce(policy_name, request):
@@ -44,23 +31,19 @@ def enforce(policy_name, request):
 
 
     """
-    global _ENFORCER
-    if not _ENFORCER:
-        _ENFORCER = policy.Enforcer(CONF)
-        _ENFORCER.load_rules()
 
     rule_method = "telemetry:" + policy_name
     headers = request.headers
 
     policy_dict = dict()
     policy_dict['roles'] = headers.get('X-Roles', "").split(",")
-    policy_dict['target.user_id'] = (headers.get('X-User-Id'))
-    policy_dict['target.project_id'] = (headers.get('X-Project-Id'))
+    policy_dict['user_id'] = (headers.get('X-User-Id'))
+    policy_dict['project_id'] = (headers.get('X-Project-Id'))
 
     # maintain backward compat with Juno and previous by allowing the action if
     # there is no rule defined for it
     if ((_has_rule('default') or _has_rule(rule_method)) and
-            not _ENFORCER.enforce(rule_method, {}, policy_dict)):
+            not pecan.request.enforcer.enforce(rule_method, {}, policy_dict)):
         pecan.core.abort(status_code=403, detail='RBAC Authorization Failed')
 
 
@@ -75,23 +58,19 @@ def get_limited_to(headers):
     one of these.
 
     """
-    global _ENFORCER
-    if not _ENFORCER:
-        _ENFORCER = policy.Enforcer(CONF)
-        _ENFORCER.load_rules()
 
     policy_dict = dict()
     policy_dict['roles'] = headers.get('X-Roles', "").split(",")
-    policy_dict['target.user_id'] = (headers.get('X-User-Id'))
-    policy_dict['target.project_id'] = (headers.get('X-Project-Id'))
+    policy_dict['user_id'] = (headers.get('X-User-Id'))
+    policy_dict['project_id'] = (headers.get('X-Project-Id'))
 
     # maintain backward compat with Juno and previous by using context_is_admin
     # rule if the segregation rule (added in Kilo) is not defined
     rule_name = 'segregation' if _has_rule(
         'segregation') else 'context_is_admin'
-    if not _ENFORCER.enforce(rule_name,
-                             {},
-                             policy_dict):
+    if not pecan.request.enforcer.enforce(rule_name,
+                                          {},
+                                          policy_dict):
         return headers.get('X-User-Id'), headers.get('X-Project-Id')
 
     return None, None

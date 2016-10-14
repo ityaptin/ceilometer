@@ -330,7 +330,7 @@ class TestQueryToKwArgs(tests_base.BaseTestCase):
             request.headers.return_value = {'X-ProjectId': 'foobar'}
             kwargs = utils.query_to_kwargs(queries,
                                            storage.SampleFilter.__init__)
-            self.assertFalse('self' in kwargs)
+            self.assertNotIn('self', kwargs)
 
     def test_sample_filter_translation(self):
         queries = [v2_base.Query(field=f,
@@ -379,7 +379,7 @@ class TestQueryToKwArgs(tests_base.BaseTestCase):
         exc = self.assertRaises(
             wsme.exc.UnknownArgument,
             utils.query_to_kwargs,
-            q, storage_base.Connection.get_meters, ['limit'])
+            q, storage_base.Connection.get_meters, ['limit', 'unique'])
         valid_keys = ['project', 'resource', 'source', 'user']
         msg = ("unrecognized field in query: %s, "
                "valid keys: %s") % (q, valid_keys)

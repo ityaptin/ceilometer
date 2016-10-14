@@ -1,5 +1,3 @@
-.. docbookrestapi
-
 ============
  V2 Web API
 ============
@@ -40,14 +38,27 @@ Samples and Statistics
 .. autotype:: ceilometer.api.controllers.v2.meters.Statistics
    :members:
 
-When a simple statistics request is invoked (using GET /v2/meters/<meter_name>/statistics), it will return the standard set of *Statistics*: *avg*, *sum*,
-*min*, *max*, and *count*.
+When a simple statistics request is invoked (using GET /v2/meters/<meter_name>/statistics),
+it will return the standard set of *Statistics*: *avg*, *sum*, *min*, *max*, and *count*.
+
+.. note::
+
+   If using Ceilometer data for statistics, it's recommended to use a backend
+   such as Gnocchi_ rather than Ceilometer's interface. Gnocchi is designed
+   specifically for this use case by providing a light-weight, aggregated model.
+   As they manage data differently, the API models returned by Ceilometer and Gnocchi
+   are different. The Gnocchi API can be found here_.
+
+.. _Gnocchi: http://docs.openstack.org/developer/gnocchi/
+.. _here: http://docs.openstack.org/developer/gnocchi/rest.html
 
 Selectable Aggregates
 +++++++++++++++++++++
 
-The Statistics API has been extended to include the aggregate functions *stddev* and *cardinality*. You can explicitly select these functions or any from the
-standard set by specifying an aggregate function in the statistics query::
+The Statistics API has been extended to include the aggregate functions
+*stddev* and *cardinality*. You can explicitly select these functions or any
+from the standard set by specifying an aggregate function in the statistics
+query::
 
     GET /v2/meters/<meter_name>/statistics?aggregate.func=<name>&aggregate.param=<value>
 
@@ -59,7 +70,9 @@ Duplicate aggregate function and parameter pairs are silently discarded from the
 
 are, on the other hand, both allowed by the API and supported by the storage drivers.  See the :ref:`functional-examples` section for more detail.
 
-.. note:: Currently only *cardinality* needs aggregate.param to be specified.
+.. note::
+
+   Currently only *cardinality* needs aggregate.param to be specified.
 
 .. autotype:: ceilometer.api.controllers.v2.meters.Aggregate
    :members:
@@ -116,7 +129,9 @@ nature of *resource_metadata* field, there is no practical or consistent way
 to validate the query fields under *metadata* domain like it is done for
 all other fields.
 
-.. note:: The API call will return HTTP 200 OK status for both of the
+.. note::
+
+   The API call will return HTTP 200 OK status for both of the
    following cases: when a query with *metadata.<field>* does not match its
    value, and when *<field>* itself does not exist in any of the records being
    queried.
@@ -156,13 +171,15 @@ supported: *=*, *!=*, *<*, *<=*, *>*, *>=* and *in*; and the following logical
 operators can be used: *and* *or* and *not*. The field names are validated
 against the database models. See :ref:`api-queries` for how to query the API.
 
-.. note:: The *not* operator has different meaning in MongoDB and in SQL DB engine.
+.. note::
+
+   The *not* operator has different meaning in MongoDB and in SQL DB engine.
    If the *not* operator is applied on a non existent metadata field then
-   the result depends on the DB engine. For example if
+   the result depends on the DB engine. For example, if
    {"not": {"metadata.nonexistent_field" : "some value"}} filter is used in a query
    the MongoDB will return every Sample object as *not* operator evaluated true
    for every Sample where the given field does not exists. See more in the MongoDB doc.
-   On the other hand SQL based DB engine will return empty result as the join operation
+   On the other hand, SQL based DB engine will return empty result as the join operation
    on the metadata table will return zero rows as the on clause of the join which
    tries to match on the metadata field name is never fulfilled.
 
@@ -195,8 +212,11 @@ Ceilometer CLI Commands::
 
      $ ceilometer --debug --os-username <username_here> --os-password <password_here> --os-auth-url http://localhost:5000/v2.0/ --os-tenant-name admin  meter-list
 
-.. note:: The *username*, *password*, and *tenant-name* options are required to be present in these commands or specified via environment variables. Note that the in-line commands will override the environment variables.
+.. note::
 
+   The *username*, *password*, and *tenant-name* options are required to be
+   present in these arguments or specified via environment variables. Note that
+   the in-line arguments will override the environment variables.
 
 .. _api-queries:
 
@@ -205,41 +225,47 @@ API Queries
 
 Ceilometer API calls:
 
-.. note:: To successfully query the Ceilometer you must first get a project-specific token from the Keystone service and add it to any API calls that you execute against that project. See the `OpenStack credentials documentation <http://docs.openstack.org/api/quick-start/content/index.html#getting-credentials-a00665>`_ for additional details.
+.. note::
+
+   To successfully query Ceilometer you must first get a project-specific
+   token from the Keystone service and add it to any API calls that you
+   execute against that project. See the
+   `OpenStack credentials documentation <http://docs.openstack.org/api/quick-start/content/index.html#getting-credentials-a00665>`_
+    for additional details.
 
 A simple query to return a list of available meters::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters"
 
 A query to return the list of resources::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/resources"
 
 A query to return the list of samples, limited to a specific meter type::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters/disk.root.size"
 
 A query using filters (see: `query filter section <http://docs.openstack.org/developer/ceilometer/webapi/v2.html#filtering-queries>`_)::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters/instance?q.field=metadata.event_type&q.value=compute.instance.delete.start"
 
 Additional examples::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters/disk.root.size?q.field=resource_id&q.op=eq&q.value=<resource_id_here>"
 
 or::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters/instance?q.field=metadata.event_type&q.value=compute.instance.exists"
 
 You can specify multiple filters by using an array of queries (order matters)::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters/instance"\
        "?q.field=metadata.event_type&q.value=compute.instance.exists"\
        "&q.field=timestamp&q.op=gt&q.value=2013-07-03T13:34:17"
@@ -247,21 +273,25 @@ You can specify multiple filters by using an array of queries (order matters)::
 A query to find the maximum value and standard deviation (*max*, *stddev*) of
 the CPU utilization for a given instance (identified by *resource_id*)::
 
-     curl -H 'X-Auth-Token: <inserttokenhere>' \
+     $ curl -H 'X-Auth-Token: <inserttokenhere>' \
        "http://localhost:8777/v2/meters/cpu_util/statistics?aggregate.func=max&aggregate.func=stddev"\
        "&q.field=resource_id&q.op=eq&q.value=64da755c-9120-4236-bee1-54acafe24980"
 
-.. note:: If any of the requested aggregates are not supported by the storage driver, a HTTP 400 error code will be returned along with an appropriate error message.
+.. note::
+
+   If any of the requested aggregates are not supported by the storage driver,
+   a HTTP 400 error code will be returned along with an appropriate error
+   message.
 
 JSON based example::
 
-     curl -X GET -H "X-Auth-Token: <inserttokenhere>" -H "Content-Type: application/json"
+     $ curl -X GET -H "X-Auth-Token: <inserttokenhere>" -H "Content-Type: application/json"
      -d '{"q": [{"field": "timestamp", "op": "ge", "value": "2014-04-01T13:34:17"}]}'
        http://localhost:8777/v2/meters/instance
 
 JSON based example with multiple filters::
 
-     curl -X GET -H "X-Auth-Token: <inserttokenhere>" -H "Content-Type: application/json"
+     $ curl -X GET -H "X-Auth-Token: <inserttokenhere>" -H "Content-Type: application/json"
       -d '{"q": [{"field": "timestamp", "op": "ge", "value": "2014-04-01T13:34:17"},
         {"field": "resource_id", "op": "eq", "value": "4da2b992-0dc3-4a7c-a19a-d54bf918de41"}]}'
         http://localhost:8777/v2/meters/instance
@@ -588,7 +618,7 @@ to four, the query looks like the following::
 
 A query request looks like the following with curl::
 
-    curl -X POST -H 'X-Auth-Token: <inserttokenhere>' -H 'Content-Type: application/json' \
+    $ curl -X POST -H 'X-Auth-Token: <inserttokenhere>' -H 'Content-Type: application/json' \
       -d '<insertyourqueryexpressionhere>' \
        http://localhost:8777/v2/query/samples
 
@@ -604,7 +634,7 @@ By adding a *Sample* to a *Resource*, you create automatically the corresponding
 *Meter* if it does not exist already. To achieve this, you have to POST a list
 of one to many samples in JSON format::
 
-    curl -X POST -H 'X-Auth-Token: <inserttokenhere>' -H 'Content-Type: application/json' \
+    $ curl -X POST -H 'X-Auth-Token: <inserttokenhere>' -H 'Content-Type: application/json' \
       -d '<insertyoursampleslisthere>' \
       http://localhost:8777/v2/meters/<insertyourmeternamehere>
 

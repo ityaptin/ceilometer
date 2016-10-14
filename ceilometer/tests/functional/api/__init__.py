@@ -21,11 +21,8 @@ from oslo_policy import opts
 import pecan
 import pecan.testing
 
-from ceilometer.api import rbac
 from ceilometer.tests import db as db_test_base
 
-OPT_GROUP_NAME = 'keystone_authtoken'
-cfg.CONF.import_group(OPT_GROUP_NAME, "keystonemiddleware.auth_token")
 cfg.CONF.import_group('api', 'ceilometer.api.controllers.v2.root')
 
 
@@ -44,14 +41,13 @@ class FunctionalTest(db_test_base.TestBase):
         self.setup_messaging(self.CONF)
         opts.set_defaults(self.CONF)
 
-        self.CONF.set_override("auth_version", "v2.0",
-                               group=OPT_GROUP_NAME)
         self.CONF.set_override("policy_file",
                                self.path_get('etc/ceilometer/policy.json'),
                                group='oslo_policy')
 
         self.CONF.set_override('gnocchi_is_enabled', False, group='api')
         self.CONF.set_override('aodh_is_enabled', False, group='api')
+        self.CONF.set_override('panko_is_enabled', False, group='api')
 
         self.app = self._make_app()
 
@@ -67,11 +63,10 @@ class FunctionalTest(db_test_base.TestBase):
             },
         }
 
-        return pecan.testing.load_test_app(self.config)
+        return pecan.testing.load_test_app(self.config, conf=self.CONF)
 
     def tearDown(self):
         super(FunctionalTest, self).tearDown()
-        rbac.reset()
         pecan.set_config({}, overwrite=True)
 
     def put_json(self, path, params, expect_errors=False, headers=None,

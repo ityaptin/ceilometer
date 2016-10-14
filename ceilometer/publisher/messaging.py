@@ -27,22 +27,13 @@ from oslo_utils import excutils
 import six
 import six.moves.urllib.parse as urlparse
 
-from ceilometer.i18n import _, _LI, _LE
+from ceilometer.i18n import _, _LE, _LI
 from ceilometer import messaging
 from ceilometer import publisher
 from ceilometer.publisher import utils
 
 
 LOG = log.getLogger(__name__)
-
-RPC_OPTS = [
-    cfg.StrOpt('metering_topic',
-               default='metering',
-               deprecated_for_removal=True,
-               help='The topic that ceilometer uses for metering messages.',
-               deprecated_group="DEFAULT",
-               ),
-]
 
 NOTIFIER_OPTS = [
     cfg.StrOpt('metering_topic',
@@ -63,8 +54,6 @@ NOTIFIER_OPTS = [
                )
 ]
 
-cfg.CONF.register_opts(RPC_OPTS,
-                       group="publisher_rpc")
 cfg.CONF.register_opts(NOTIFIER_OPTS,
                        group="publisher_notifier")
 cfg.CONF.import_opt('host', 'ceilometer.service')
@@ -87,7 +76,7 @@ class MessagingPublisher(publisher.PublisherBase):
 
     def __init__(self, parsed_url):
         options = urlparse.parse_qs(parsed_url.query)
-        # the values of the option is a list of url params values
+        # the value of options is a list of url param values
         # only take care of the latest one if the option
         # is provided more than once
         self.per_meter_topic = bool(int(
@@ -101,18 +90,17 @@ class MessagingPublisher(publisher.PublisherBase):
         self.local_queue = []
 
         if self.policy in ['default', 'queue', 'drop']:
-            LOG.info(_LI('Publishing policy set to %s') % self.policy)
+            LOG.info(_LI('Publishing policy set to %s'), self.policy)
         else:
-            LOG.warn(_('Publishing policy is unknown (%s) force to default')
-                     % self.policy)
+            LOG.warning(_('Publishing policy is unknown (%s) force to '
+                          'default'), self.policy)
             self.policy = 'default'
 
         self.retry = 1 if self.policy in ['queue', 'drop'] else None
 
-    def publish_samples(self, context, samples):
+    def publish_samples(self, samples):
         """Publish samples on RPC.
 
-        :param context: Execution context from the service or RPC call.
         :param samples: Samples from pipeline after transformation.
 
         """
@@ -122,8 +110,8 @@ class MessagingPublisher(publisher.PublisherBase):
                 sample, cfg.CONF.publisher.telemetry_secret)
             for sample in samples
         ]
-        topic = cfg.CONF.publisher_rpc.metering_topic
-        self.local_queue.append((context, topic, meters))
+        topic = cfg.CONF.publisher_notifier.metering_topic
+        self.local_queue.append((topic, meters))
 
         if self.per_meter_topic:
             for meter_name, meter_list in itertools.groupby(
@@ -133,15 +121,15 @@ class MessagingPublisher(publisher.PublisherBase):
                 topic_name = topic + '.' + meter_name
                 LOG.debug('Publishing %(m)d samples on %(n)s',
                           {'m': len(meter_list), 'n': topic_name})
-                self.local_queue.append((context, topic_name, meter_list))
+                self.local_queue.append((topic_name, meter_list))
 
         self.flush()
 
     def flush(self):
         # NOTE(sileht):
-        # this is why the self.local_queue, is emptied before processing the
+        # this is why the self.local_queue is emptied before processing the
         # queue and the remaining messages in the queue are added to
-        # self.local_queue after in case of a other call have already added
+        # self.local_queue after in case of another call having already added
         # something in the self.local_queue
         queue = self.local_queue
         self.local_queue = []
@@ -155,24 +143,24 @@ class MessagingPublisher(publisher.PublisherBase):
         if queue_length > self.max_queue_length > 0:
             count = queue_length - self.max_queue_length
             self.local_queue = self.local_queue[count:]
-            LOG.warn(_("Publisher max local_queue length is exceeded, "
-                     "dropping %d oldest samples") % count)
+            LOG.warning(_("Publisher max local_queue length is exceeded, "
+                        "dropping %d oldest samples") % count)
 
     def _process_queue(self, queue, policy):
         current_retry = 0
         while queue:
-            context, topic, data = queue[0]
+            topic, data = queue[0]
             try:
-                self._send(context, topic, data)
+                self._send(topic, data)
             except DeliveryFailure:
-                data = sum([len(m) for __, __, m in queue])
+                data = sum([len(m) for __, m in queue])
                 if policy == 'queue':
-                    LOG.warn(_("Failed to publish %d datapoints, queue them"),
-                             data)
+                    LOG.warning(_("Failed to publish %d datapoints, queue "
+                                  "them"), data)
                     return queue
                 elif policy == 'drop':
-                    LOG.warn(_("Failed to publish %d datapoints, "
-                               "dropping them"), data)
+                    LOG.warning(_("Failed to publish %d datapoints, "
+                                "dropping them"), data)
                     return []
                 current_retry += 1
                 if current_retry >= self.max_retry:
@@ -183,60 +171,46 @@ class MessagingPublisher(publisher.PublisherBase):
                 queue.pop(0)
         return []
 
-    def publish_events(self, context, events):
+    def publish_events(self, events):
         """Send an event message for publishing
 
-        :param context: Execution context from the service or RPC call
         :param events: events from pipeline after transformation
         """
         ev_list = [utils.message_from_event(
             event, cfg.CONF.publisher.telemetry_secret) for event in events]
 
         topic = cfg.CONF.publisher_notifier.event_topic
-        self.local_queue.append((context, topic, ev_list))
+        self.local_queue.append((topic, ev_list))
         self.flush()
 
     @abc.abstractmethod
-    def _send(self, context, topic, meters):
+    def _send(self, topic, meters):
         """Send the meters to the messaging topic."""
-
-
-class RPCPublisher(MessagingPublisher):
-    def __init__(self, parsed_url):
-        super(RPCPublisher, self).__init__(parsed_url)
-
-        options = urlparse.parse_qs(parsed_url.query)
-        self.target = options.get('target', ['record_metering_data'])[0]
-
-        self.rpc_client = messaging.get_rpc_client(
-            messaging.get_transport(),
-            retry=self.retry, version='1.0'
-        )
-
-    def _send(self, context, topic, meters):
-        try:
-            self.rpc_client.prepare(topic=topic).cast(context, self.target,
-                                                      data=meters)
-        except oslo_messaging.MessageDeliveryFailure as e:
-            raise_delivery_failure(e)
 
 
 class NotifierPublisher(MessagingPublisher):
     def __init__(self, parsed_url, default_topic):
         super(NotifierPublisher, self).__init__(parsed_url)
         options = urlparse.parse_qs(parsed_url.query)
-        topic = options.get('topic', [default_topic])[-1]
+        topic = options.pop('topic', [default_topic])
+        driver = options.pop('driver', ['rabbit'])[0]
+        url = None
+        if parsed_url.netloc != '':
+            url = urlparse.urlunsplit([driver, parsed_url.netloc,
+                                       parsed_url.path,
+                                       urlparse.urlencode(options, True),
+                                       parsed_url.fragment])
         self.notifier = oslo_messaging.Notifier(
-            messaging.get_transport(),
+            messaging.get_transport(cfg.CONF, url),
             driver=cfg.CONF.publisher_notifier.telemetry_driver,
             publisher_id='telemetry.publisher.%s' % cfg.CONF.host,
-            topic=topic,
+            topics=topic,
             retry=self.retry
         )
 
-    def _send(self, context, event_type, data):
+    def _send(self, event_type, data):
         try:
-            self.notifier.sample(context.to_dict(), event_type=event_type,
+            self.notifier.sample({}, event_type=event_type,
                                  payload=data)
         except oslo_messaging.MessageDeliveryFailure as e:
             raise_delivery_failure(e)
